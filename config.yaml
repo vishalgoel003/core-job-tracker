@@ -1,0 +1,27 @@
+global_settings:
+  output_base_dir: "./targets"
+  default_relevance: "TBD"
+
+companies:
+  - name: "Barclays"
+    ats_type: "workday"
+    api_url: "https://barclays.wd3.myworkdayjobs.com/wday/cxs/barclays/External_Career_Site_Barclays/jobs"
+    payload:
+      searchText: "Java"  # Enter your core keyword filter here
+      limit: 20
+      offset: 0
+      appliedFacets:
+        # Mapping your explicit locations list from the URL query
+        locations: 
+          - "1ab48a98eb7c100163465bf6c3310000"
+          - "112c05428201100163763bd6ad400000"
+          - "112c0542820110016377c02c6ef00000"
+          - "112c0542820110016377af553b050000"
+          - "1ab48a98eb7c100163423aff71b80000"
+          - "b8f75d1cb9781000cd91027a85e30000"
+          - "1ab48a98eb7c1001634cf23b210c0000"
+          - "112c05428201100163788a5627320000"
+          - "1110a9ca6540100196e1f0c315e90000"
+        # Mapping your explicit technology/engineering family group from the URL query
+        jobFamilyGroup: 
+          - "112c054282011001e9162cfccdc10000"
