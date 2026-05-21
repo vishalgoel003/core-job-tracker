@@ -1,31 +1,21 @@
 # Agent Behavioral Rules & Workspace Constraints
 
-## Technical Stack
-- Runtime: Native Python 3.14.0 inside the local virtual environment (`venv`).
-- Engine: Pure HTTP networking via the `requests` library.
-- Strict Rule: No Playwright, Puppeteer, or browser UI simulation is allowed. 
+## 1. Technical Stack Constraints
+- **[TECH-1.1]** Runtime Environment: Must execute inside native Python 3.14.0 within the local virtual environment (`venv`).
+- **[TECH-1.2]** Networking Wrapper: Pure synchronous HTTP requests via the native `requests` library.
+- **[TECH-1.3]** Browser Simulation Ban: Use of Playwright, Puppeteer, Selenium, or browser UI engines is strictly forbidden.
+- **[TECH-1.4]** Authorized Dependencies: You are explicitly permitted to use production-grade parsing and formatting packages (`pyyaml`, `html2text`) to ensure data integrity and clean Markdown conversion.
 
-## Architectural Reference Check
-- You have functional open-source code inside `./reference/ats-scrapers` and `./reference/ever-jobs`. 
-- Analyze those repositories to understand how to format endpoint URLs and headers for Workday, Greenhouse, and Lever APIs before writing code.
+## 2. Stateful Networking & Firewall Avoidance
+- **[NET-2.1]** Stateful Requests: All corporate endpoint scraper modules must utilize `requests.Session()` rather than stateless independent HTTP requests to preserve tracking and security cookies across deep pages.
+- **[NET-2.2]** Browser Headers: Every HTTP request dictionary must pass a standard, realistic web browser `User-Agent` string to safely avoid corporate edge firewall 403 blocks.
+- **[NET-2.3]** Non-200 Error Handling: On any non-200 HTTP response code, you must immediately halt, output the raw response status and header dict to the terminal, and invoke the `/grill-me` protocol. Never attempt an automated retry loop.
 
-## Step-by-Step Execution Protocol
-1. Read `project_description.md` as your execution roadmap.
-2. You must operate on ONE specific task at a time.
-3. Before writing, modifying, or deleting code, explain your implementation approach and explicitly ask the user for confirmation.
-4. DEFINITION OF DONE: A task is not complete until you run the code natively in the local terminal, verify it connects successfully to a live API endpoint, and confirm files are correctly generated on disk.
-5. If a request throws an error, output the raw HTTP status code to the user interface. Never assume success.
+## 3. Directory Security & Write Isolation
+- **[SEC-3.1]** Reference Folders Read-Only: The `./reference/` path is strictly read-only. You are permanently forbidden from adding, modifying, or deleting code inside reference subfolders.
+- **[SEC-3.2]** Scope Isolation: All generated application assets must be strictly bound to the project root directory and the dynamically generated `./targets/` output folders.
 
-## Security & Write Isolation
-- CRITICAL: The `./reference/` directory is strictly READ-ONLY. You are forbidden from creating, modifying, or deleting files inside `./reference/ever-jobs` or `./reference/ats-scrapers`.
-- All code generation must be strictly bound to the root directory (`run_scrapers.py`, `dashboard.py`) and the automatically generated `./targets/` output path.
-
-## Loop Interruption Rules
-- You must NOT use automated loop execution routines (`/goal`) for writing network functions.
-- If an HTTP request returns a status code other than 200, or if a JSON parsing error occurs, you must immediately halt, dump the raw response headers to the panel, and invoke the `/grill-me` routine to ask the user for manual guidance.
-- Do not attempt to automatically fix connection logic more than once without human text sign-off.
-
-## Execution Environment Bounds
-- Terminal Type: Git Bash on Windows 11.
-- Virtual Environment Activation Path: `source venv/Scripts/activate` (Do not use `bin/activate`).
-- Python Target: Explicitly execute modules via `python run_scrapers.py` within the active activated terminal sub-shell environment.
+## 4. Sequential Execution Protocol
+- **[EXEC-4.1]** Task Isolation: You must operate on exactly one task from `project_description.md` at a time.
+- **[EXEC-4.2]** Pre-Flight Confirmation: Before generating, updating, or deleting any codebase files, you must explain your technical blueprint and explicitly await the user's text verification.
+- **[EXEC-4.3]** Definition of Done: A task is not complete until you natively execute the code in the workspace terminal, verify successful integration, and confirm expected files are present on disk.
