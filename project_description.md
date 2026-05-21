@@ -10,10 +10,10 @@ The execution engine must automatically read from a base configuration and outpu
 
 targets/
 └── [employer_name]/
-├── master_jobs.csv       <-- State tracking ledger
-└── job_details/          <-- Text descriptions folder
-├── job_12345.md
-└── job_67890.md
+    ├── master_jobs.csv       <-- State tracking ledger
+    └── job_details/          <-- Text descriptions folder
+        ├── job_12345.md
+        └── job_67890.md
 
 ```
 
