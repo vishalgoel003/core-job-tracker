@@ -1,3 +1,6 @@
 requests
 PyYAML
 html2text
+streamlit
+pandas
+filelock

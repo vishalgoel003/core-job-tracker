@@ -1,6 +1,6 @@
 global_settings:
   output_base_dir: "./targets"
-  default_relevance: "TBD"
+  default_relevance: 0
 
 companies:
   - name: "Barclays"
@@ -25,3 +25,23 @@ companies:
         # Mapping your explicit technology/engineering family group from the URL query
         jobFamilyGroup: 
           - "112c054282011001e9162cfccdc10000"
+  - name: "Mastercard"
+    ats_type: "workday"
+    api_url: "https://mastercard.wd1.myworkdayjobs.com/wday/cxs/mastercard/CorporateCareers/jobs"
+    payload:
+      searchText: "Java"
+      limit: 20
+      offset: 0
+      appliedFacets:
+        locations:
+          - "8eab563831bf10acbc722e4859721571"
+          - "8eab563831bf10acb97b7fba5feff76e"
+          - "2e83df2db0851073b1d3be60012912d5"
+          - "8eab563831bf10acbb7b5bf86d570af1"
+          - "28905a74db1b10019f5bb16c36030000"
+          - "85a5bdf4e1831035984400a2fb698c94"
+        jobFamilyGroup:
+          - "866c0ed135ff106f00587685e7483440"
+          - "189119ebe266100103737c3d6a6e0000"
+          - "79159e74ef6f01a1ba398ea19325020c"
+          - "0ea6171d1dd81001035429e2c6b00000"

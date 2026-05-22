@@ -94,7 +94,7 @@ def _normalize_job(raw_item: dict[str, Any], company_name: str, base_url: str) -
         "first_discovered_on": today,
         "last_date":           today,
         "visible":             "yes",
-        "relevance":           "TBD",
+        "relevance":           0,       # numeric score 0–100; set by LLM pipeline later
         "applied":             "no",
         # --- enrichment fields (stripped from CSV by extrasaction='ignore') ---
         "_company":           company_name,
