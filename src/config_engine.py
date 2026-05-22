@@ -4,8 +4,8 @@ config_engine.py — Task 1: Configuration Engine
 Parses config.yaml and dynamically generates the required output directory
 tree under ./targets/ for each configured employer.
 
-Usage (inside activated venv):
-    python config_engine.py
+Usage (inside activated venv, from project root):
+    python src/config_engine.py
 """
 
 import os

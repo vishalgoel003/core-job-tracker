@@ -29,7 +29,10 @@ from typing import Any
 import html2text
 import requests
 
-import config_engine
+try:
+    from . import config_engine          # when imported as part of the src package
+except ImportError:
+    import config_engine                 # when run directly: python src/workday_scraper.py
 
 # ---------------------------------------------------------------------------
 # Constants — derived from reference/ats-scrapers/src/jobhive/scrapers/workday.py

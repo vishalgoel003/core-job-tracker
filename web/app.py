@@ -1,24 +1,28 @@
 """
-web/app.py — Job Application OS
----------------------------------
+web/app.py — Job Application OS (v2)
+--------------------------------------
 Streamlit-based CRM front-end for the core-job-tracker pipeline.
 
-Runs from the project root as:
+Run from the project root:
     streamlit run web/app.py
 
-Architecture:
-  - Reads all master_jobs.csv files via config_engine (ATS-agnostic, multi-tenant).
-  - 3-Tab CRM: Active Radar / Sent Applications / Archived.
-  - Inline `applied` date-stamp + `relevance` score editing via st.data_editor.
-  - filelock safe write-back prevents race conditions with the background scraper.
-  - @st.dialog with 3 tabs: Job Description / My Notes (live .md edit) / LLM placeholder.
+Changes in v2:
+  - "📖" action column in every tab triggers @st.dialog (replaces on_select + selectbox).
+  - Editor version counter forces checkbox reset after modal open.
+  - Tab 2 (Sent) is now st.data_editor — unchecking "App" returns job to Active Radar.
+  - Condensed column headers to prevent horizontal scroll.
+  - "🚀 Run Scraper" button in sidebar (subprocess.run → src/state_tracker.py).
+  - Streamlit chrome hidden via CSS injection.
+  - Imports updated to src.config_engine package path.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
-# Path injection — web/app.py imports from the project root where config_engine lives
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Path injection — allows `import src.config_engine` from the project root
+_PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
 
 import datetime
 import re
@@ -28,10 +32,10 @@ import filelock
 import pandas as pd
 import streamlit as st
 
-import config_engine
+import src.config_engine as config_engine
 
 # ---------------------------------------------------------------------------
-# Page configuration
+# Page configuration  (must be the FIRST Streamlit call)
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
@@ -41,28 +45,44 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom CSS — subtle polish without a full design framework
+# ---------------------------------------------------------------------------
+# CSS — hide Streamlit chrome + table polish
+# ---------------------------------------------------------------------------
+
 st.markdown("""
 <style>
-    /* Metric cards */
+    /* ── Hide Streamlit chrome ── */
+    #MainMenu                    { visibility: hidden; }
+    header                       { visibility: hidden; }
+    footer                       { visibility: hidden; }
+    [data-testid="stToolbar"]    { display: none; }
+    .block-container             { padding-top: 1.5rem !important; }
+
+    /* ── Metric cards ── */
     [data-testid="stMetric"] {
-        background: #1a1a2e;
-        border: 1px solid #2d2d44;
-        border-radius: 10px;
-        padding: 16px 20px;
+        background    : #1a1a2e;
+        border        : 1px solid #2d2d44;
+        border-radius : 10px;
+        padding       : 6px 12px !important;
     }
-    /* Tab labels */
+
+    /* ── Tab labels ── */
     .stTabs [data-baseweb="tab"] {
-        font-size: 14px;
-        font-weight: 600;
-        padding: 8px 20px;
+        font-size   : 14px;
+        font-weight : 600;
+        padding     : 8px 18px;
     }
-    /* Tighten data editor rows */
+
+    /* ── Data editor ── */
     [data-testid="stDataEditor"] { border-radius: 8px; }
-    /* Sidebar header */
+
+    /* ── Disable native table sorting ── */
+    [data-testid="stDataEditor"] th {
+        pointer-events: none !important;
+    }
+
+    /* ── Sidebar accent ── */
     [data-testid="stSidebar"] h2 { color: #a78bfa; }
-    /* Caption colour */
-    .stCaption { color: #888; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -70,7 +90,7 @@ st.markdown("""
 # Constants
 # ---------------------------------------------------------------------------
 
-_LOCK_TIMEOUT_S = 5   # seconds to wait for filelock before warning user
+_LOCK_TIMEOUT_S = 5
 
 SORT_OPTIONS = ["Deadline ↑", "Relevance ↓", "Posted Date ↓", "Company A→Z"]
 _SORT_MAP = {
@@ -80,28 +100,21 @@ _SORT_MAP = {
     "Company A→Z":   ("_company",              True),
 }
 
-# Columns shown in Tab 1 editor
-_ACTIVE_COLS   = ["applied_bool", "relevance", "_company", "job_id", "title",
+# Display column lists (open_modal injected at position 0 at render time)
+_ACTIVE_BASE   = ["applied_bool", "relevance", "_company", "job_id", "title",
                   "first_discovered_on", "last_date"]
-
-# Columns shown in Tab 2 (sent) read-only table
-_SENT_COLS     = ["applied", "_company", "job_id", "title",
-                  "first_discovered_on", "last_date", "relevance"]
-
-# Columns shown in Tab 3 (archived) read-only table
-_ARCHIVED_COLS = ["_company", "job_id", "title", "first_discovered_on", "last_date"]
+_SENT_BASE     = ["applied_bool", "applied", "relevance", "_company", "job_id", "title",
+                  "first_discovered_on", "last_date"]
+_ARCHIVED_BASE = ["_company", "job_id", "title", "first_discovered_on", "last_date"]
 
 # ---------------------------------------------------------------------------
 # Markdown notes helpers
 # ---------------------------------------------------------------------------
 
-# Matches the Notes block: from "## Notes\n\n" up to (but not including)
-# the next "\n\n---" separator or end-of-file. Lookahead preserves separator.
 _NOTES_RE = re.compile(r"(## Notes\n\n)(.*?)(?=\n\n---|$)", re.DOTALL)
 
 
 def _read_notes(md_text: str) -> str:
-    """Extract user notes from the ## Notes section. Returns '' for the placeholder comment."""
     m = _NOTES_RE.search(md_text)
     if not m:
         return ""
@@ -110,13 +123,10 @@ def _read_notes(md_text: str) -> str:
 
 
 def _write_notes(md_text: str, new_notes: str) -> str:
-    """Non-destructively replace the ## Notes content. Preserves all other sections."""
     def _rep(m: re.Match) -> str:
         return f"## Notes\n\n{new_notes.strip()}"
-
     result = _NOTES_RE.sub(_rep, md_text, count=1)
     if result == md_text:
-        # Notes section absent — append it
         result = md_text.rstrip() + f"\n\n## Notes\n\n{new_notes.strip()}\n"
     return result
 
@@ -126,7 +136,6 @@ def _write_notes(md_text: str, new_notes: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _not_applied(val: str) -> bool:
-    """Returns True if the applied field means 'not yet applied'."""
     return val.strip().lower() in ("", "no")
 
 
@@ -141,10 +150,9 @@ def _is_applied(val: str) -> bool:
 @st.cache_data(ttl=30)
 def load_all_jobs() -> pd.DataFrame:
     """
-    Concatenate master_jobs.csv from every configured company directory.
-    Injects three internal columns (_company, _csv_path, _md_dir) used by
-    write-back and modal — these are never displayed in the UI.
-    Cache TTL=30s so a background scraper run is reflected within half a minute.
+    Concat master_jobs.csv from every configured company.
+    Injects _company, _csv_path, _md_dir per-row (never displayed).
+    TTL=30s keeps the cache fresh without a manual refresh.
     """
     config    = config_engine.load_config("config.yaml")
     all_paths = config_engine.resolve_output_paths(config)
@@ -165,8 +173,6 @@ def load_all_jobs() -> pd.DataFrame:
         return pd.DataFrame()
 
     combined = pd.concat(frames, ignore_index=True)
-
-    # Type coercions
     combined["relevance"] = (
         pd.to_numeric(combined["relevance"], errors="coerce").fillna(0).astype(int)
     )
@@ -174,26 +180,20 @@ def load_all_jobs() -> pd.DataFrame:
         combined["first_discovered_on"], errors="coerce"
     )
     combined["last_date"] = pd.to_datetime(combined["last_date"], errors="coerce")
-
-    # Derived checkbox column — backward-compatible with legacy "yes"/"no"
     combined["applied_bool"] = combined["applied"].apply(_is_applied)
-
     return combined
 
 
 # ---------------------------------------------------------------------------
-# Write-back
+# Write-back (filelock)
 # ---------------------------------------------------------------------------
 
 def _write_back(changes: list[dict]) -> None:
     """
-    Apply a list of field changes to their per-company CSVs using filelock.
-
-    Each change dict: { job_id, csv_path, field, value }
-
-    Groups changes by csv_path to minimise file opens.
-    On lock timeout (scraper is writing), shows a warning and aborts without crashing.
-    On success, clears the @st.cache_data and triggers a rerun.
+    Write field changes to per-company CSVs using filelock.
+    Groups changes by CSV path to minimise file opens.
+    On timeout: shows warning (scraper may be writing), does not crash.
+    On success: clears cache + reruns.
     """
     by_csv: dict[str, list] = defaultdict(list)
     for c in changes:
@@ -224,10 +224,6 @@ def _write_back(changes: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 def _apply_sort(df: pd.DataFrame, sort1: str, sort2: str) -> pd.DataFrame:
-    """
-    Multi-tiered Pandas sort. na_position='last' ensures rows with no deadline
-    (NaT) always sink to the bottom, making urgent deadlines float to the top.
-    """
     col1, asc1 = _SORT_MAP[sort1]
     col2, asc2 = _SORT_MAP[sort2]
     return (
@@ -237,17 +233,38 @@ def _apply_sort(df: pd.DataFrame, sort1: str, sort2: str) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Column config
+# ---------------------------------------------------------------------------
+
+_COL_CFG = {
+    "open_modal":          st.column_config.CheckboxColumn(
+                               "📖",
+                               help="Open full job details",
+                               width="small",
+                           ),
+    "applied_bool":        st.column_config.CheckboxColumn(
+                               "App",
+                               help="Check to mark applied (saves today's date). Uncheck to undo.",
+                               width="small",
+                           ),
+    "relevance":           st.column_config.NumberColumn(
+                               "⭐", min_value=0, max_value=100, step=1, width="small",
+                           ),
+    "_company":            st.column_config.TextColumn("Company",  disabled=True, width="small"),
+    "job_id":              st.column_config.TextColumn("ID",       disabled=True, width="small"),
+    "title":               st.column_config.TextColumn("Title",    disabled=True, width="large"),
+    "first_discovered_on": st.column_config.DateColumn("Added",    disabled=True, width="small"),
+    "last_date":           st.column_config.DateColumn("Due",      disabled=True, width="small"),
+    "applied":             st.column_config.TextColumn("App Date", disabled=True, width="small"),
+}
+
+
+# ---------------------------------------------------------------------------
 # Job Details modal
 # ---------------------------------------------------------------------------
 
 @st.dialog("Job Details", width="large")
 def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
-    """
-    Three-tab modal:
-      Tab 1 — Job Description: renders the full .md file content.
-      Tab 2 — My Notes: text_area that reads/writes the ## Notes section only.
-      Tab 3 — LLM / Resume: placeholder UI for the generative pipeline.
-    """
     st.markdown(f"### {title}")
     st.caption(f"**{company}**  ·  `{job_id}`")
     st.divider()
@@ -261,20 +278,17 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
         "🤖 LLM / Resume",
     ])
 
-    # --- Tab 1: Job Description ---
     with tab_jd:
         if md_text:
             st.markdown(md_text, unsafe_allow_html=False)
         else:
             st.warning(
-                "No detail file found on disk.  \n"
-                "Run `python state_tracker.py` to generate `.md` files."
+                "No detail file found.  \n"
+                "Run `python src/state_tracker.py` to generate `.md` files."
             )
 
-    # --- Tab 2: My Notes ---
     with tab_notes:
         current_notes = _read_notes(md_text)
-
         new_notes = st.text_area(
             "Your notes — saved directly to the `.md` file",
             value=current_notes,
@@ -286,16 +300,14 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
                 "Key skills to highlight: ..."
             ),
         )
-
-        if st.button("💾 Save Notes", type="primary", use_container_width=True):
+        if st.button("💾 Save Notes", type="primary", width="stretch"):
             if not md_path.exists():
-                st.error("Cannot save — the detail file does not exist yet.")
+                st.error("Cannot save — detail file does not exist yet.")
             else:
                 updated = _write_notes(md_text, new_notes)
                 md_path.write_text(updated, encoding="utf-8")
                 st.success("✅ Notes saved to disk.")
 
-    # --- Tab 3: LLM / Resume placeholder ---
     with tab_llm:
         st.info(
             "🔮 **LLM pipeline — coming in the next phase.**  \n"
@@ -304,40 +316,44 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
         )
         st.divider()
         c1, c2 = st.columns(2)
-        c1.button(
-            "⚡ Generate Tailored Resume",
-            disabled=True,
-            use_container_width=True,
-            help="Will call local Ollama API: profile.md + JD → LaTeX resume",
-        )
-        c2.button(
-            "✉️  Generate Cover Letter",
-            disabled=True,
-            use_container_width=True,
-            help="Will call local Ollama API: profile.md + JD → cover letter",
-        )
+        c1.button("⚡ Generate Tailored Resume", disabled=True, width="stretch",
+                  help="Will call local Ollama API: profile.md + JD → LaTeX resume")
+        c2.button("✉️  Generate Cover Letter",   disabled=True, width="stretch",
+                  help="Will call local Ollama API: profile.md + JD → cover letter")
         st.caption("Generated assets will appear here and be saved to `targets/[company]/generated/`.")
 
 
 # ---------------------------------------------------------------------------
-# Shared column config (disabled = read-only in data_editor / display in dataframe)
+# Generic editor renderer with open_modal action column
 # ---------------------------------------------------------------------------
 
-_COL_CFG = {
-    "_company":            st.column_config.TextColumn("Company",    disabled=True, width="small"),
-    "job_id":              st.column_config.TextColumn("Job ID",     disabled=True, width="medium"),
-    "title":               st.column_config.TextColumn("Title",      disabled=True, width="large"),
-    "first_discovered_on": st.column_config.DateColumn("Posted",     disabled=True, width="small"),
-    "last_date":           st.column_config.DateColumn("Deadline",   disabled=True, width="small"),
-    "relevance":           st.column_config.NumberColumn("Score",    min_value=0, max_value=100, step=1, width="small"),
-    "applied":             st.column_config.TextColumn("Applied On", disabled=True, width="small"),
-    "visible":             st.column_config.TextColumn("Status",     disabled=True, width="small"),
-    "applied_bool":        st.column_config.CheckboxColumn(
-                               "✅ Applied",
-                               help="Check to mark applied. Today's date is saved to the CSV.",
-                               width="small",
-                           ),
-}
+def _render_editor(
+    source_df:   pd.DataFrame,
+    display_cols: list[str],
+    editor_key:  str,
+    editable_cols: set[str],
+) -> pd.DataFrame:
+    """
+    Prepend open_modal=False column, render st.data_editor, return the result.
+    Non-editable columns have disabled=True set via _COL_CFG.
+    """
+    display = source_df[display_cols].copy().reset_index(drop=True)
+    display["open_modal"] = False
+
+    col_cfg = {k: v for k, v in _COL_CFG.items() if k in display.columns}
+    # Force-disable columns not in editable set
+    for col in display.columns:
+        if col not in editable_cols and col != "open_modal" and col in col_cfg:
+            pass  # disabled already set per column in _COL_CFG
+
+    return st.data_editor(
+        display,
+        column_config=col_cfg,
+        width="stretch",
+        hide_index=True,
+        num_rows="fixed",
+        key=editor_key,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -356,37 +372,52 @@ def main() -> None:
     if df.empty:
         st.warning(
             "No job data loaded.  \n"
-            "Run `python state_tracker.py` first to populate the tracker, "
-            "then refresh this page."
+            "Run `python src/state_tracker.py` first to populate the tracker."
         )
         st.stop()
 
     all_companies = sorted(df["_company"].unique().tolist())
 
-    # ── Sidebar controls ────────────────────────────────────────────────────
+    # ── Sidebar ─────────────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown("## ⚙️ Controls")
 
         company_filter = st.multiselect(
             "Company", options=all_companies, default=all_companies,
-            help="Show jobs from selected companies only",
         )
-        search_text = st.text_input(
-            "🔍 Search", placeholder="Title, Job ID, keyword...",
-        )
+        search_text = st.text_input("🔍 Search", placeholder="Title, ID, keyword...")
 
         st.divider()
         st.markdown("**Sort Priority**")
-        sort1 = st.selectbox("Primary sort",   SORT_OPTIONS, index=0)
-        sort2 = st.selectbox("Secondary sort", SORT_OPTIONS, index=1)
+        sort1 = st.selectbox("Primary",   SORT_OPTIONS, index=0)
+        sort2 = st.selectbox("Secondary", SORT_OPTIONS, index=1)
 
         st.divider()
-        deadline_window = st.slider(
-            "⏰ Deadline alert window (days)", min_value=1, max_value=30, value=7,
-        )
+        deadline_window = st.slider("⏰ Deadline alert window (days)", 1, 30, 7)
 
         st.divider()
-        if st.button("🔄 Refresh Now", use_container_width=True,
+        # ── Run Scraper button ───────────────────────────────────────────────
+        if st.button("🚀 Run Scraper", width="stretch",
+                     help="Fetch latest jobs from all configured ATS sources"):
+            with st.spinner("Fetching latest jobs from ATS..."):
+                try:
+                    subprocess.run(
+                        [sys.executable, "src/state_tracker.py"],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        cwd=str(_PROJECT_ROOT),
+                    )
+                    st.success("✅ Scraper completed.")
+                    st.cache_data.clear()
+                    st.rerun()
+                except subprocess.CalledProcessError as exc:
+                    st.error(
+                        f"❌ Scraper exited with error (code {exc.returncode}):\n"
+                        f"```\n{exc.stderr[-600:] if exc.stderr else 'No stderr output.'}\n```"
+                    )
+
+        if st.button("🔄 Refresh Data", width="stretch",
                      help="Force reload all CSVs from disk"):
             st.cache_data.clear()
             st.rerun()
@@ -413,7 +444,7 @@ def main() -> None:
         (base["visible"].str.lower() == "no") & base["applied"].apply(_not_applied)
     ].reset_index(drop=True)
 
-    # ── Funnel Metrics ribbon ───────────────────────────────────────────────
+    # ── Funnel Metrics ───────────────────────────────────────────────────────
     today          = pd.Timestamp.today().normalize()
     deadlines_soon = int(
         (
@@ -423,8 +454,8 @@ def main() -> None:
     )
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("🎯 Active Radar",       len(active_df))
-    m2.metric("📤 Sent",               len(sent_df))
+    m1.metric("🎯 Active Radar",      len(active_df))
+    m2.metric("📤 Sent",              len(sent_df))
     m3.metric(
         f"⏰ Deadlines ≤{deadline_window}d",
         deadlines_soon,
@@ -435,7 +466,7 @@ def main() -> None:
 
     st.divider()
 
-    # ── 3 Main Tabs ─────────────────────────────────────────────────────────
+    # ── Tabs ────────────────────────────────────────────────────────────────
     tab1, tab2, tab3 = st.tabs([
         f"🎯 Active Radar  ({len(active_df)})",
         f"📤 Sent Applications  ({len(sent_df)})",
@@ -447,126 +478,140 @@ def main() -> None:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with tab1:
         if active_df.empty:
-            st.info(
-                "No active jobs match your current filters.  \n"
-                "Try broadening your search or running the scraper."
-            )
+            st.info("No active jobs match your filters. Try broadening your search.")
         else:
-            active_display = active_df[_ACTIVE_COLS].reset_index(drop=True)
+            t1_ver    = st.session_state.get("t1_ver", 0)
+            t1_key    = f"tab1_editor_{t1_ver}"
+            t1_source = active_df[_ACTIVE_BASE].copy().reset_index(drop=True)
+            t1_source["open_modal"] = False
 
             edited = st.data_editor(
-                active_display,
-                column_config={k: v for k, v in _COL_CFG.items() if k in _ACTIVE_COLS},
-                use_container_width=True,
+                t1_source,
+                column_config={k: v for k, v in _COL_CFG.items() if k in t1_source.columns},
+                width="stretch",
                 hide_index=True,
-                key="tab1_editor",
                 num_rows="fixed",
+                key=t1_key,
             )
 
-            # ── Delta detection & filelock write-back ──────────────────────
-            changes: list[dict] = []
-            for idx in range(min(len(edited), len(active_display))):
-                original = active_display.iloc[idx]
-                edit     = edited.iloc[idx]
-                full_row = active_df.iloc[idx]   # has _csv_path, job_id
+            # ── Modal trigger (checked FIRST — if fired, skip write-back) ──
+            for idx in range(len(edited)):
+                if edited.iloc[idx]["open_modal"]:
+                    row = active_df.iloc[idx]
+                    # Increment version → key changes → checkbox resets next rerun
+                    st.session_state["t1_ver"] = t1_ver + 1
+                    show_job_modal(row["job_id"], row["title"], row["_company"], row["_md_dir"])
+                    break   # only one modal per render cycle
+            else:
+                # ── Write-back: applied_bool + relevance ──────────────────
+                changes: list[dict] = []
+                for idx in range(min(len(edited), len(t1_source))):
+                    orig     = t1_source.iloc[idx]
+                    edit     = edited.iloc[idx]
+                    full_row = active_df.iloc[idx]
 
-                # applied_bool toggled
-                if bool(edit["applied_bool"]) != bool(original["applied_bool"]):
-                    new_val = (
-                        datetime.date.today().isoformat()
-                        if edit["applied_bool"] else ""
-                    )
-                    changes.append({
-                        "job_id":   full_row["job_id"],
-                        "csv_path": full_row["_csv_path"],
-                        "field":    "applied",
-                        "value":    new_val,
-                    })
+                    if bool(edit["applied_bool"]) != bool(orig["applied_bool"]):
+                        new_val = (
+                            datetime.date.today().isoformat()
+                            if edit["applied_bool"] else ""
+                        )
+                        changes.append({
+                            "job_id":   full_row["job_id"],
+                            "csv_path": full_row["_csv_path"],
+                            "field":    "applied",
+                            "value":    new_val,
+                        })
 
-                # relevance score edited
-                if int(edit["relevance"]) != int(original["relevance"]):
-                    changes.append({
-                        "job_id":   full_row["job_id"],
-                        "csv_path": full_row["_csv_path"],
-                        "field":    "relevance",
-                        "value":    int(edit["relevance"]),
-                    })
+                    if int(edit["relevance"]) != int(orig["relevance"]):
+                        changes.append({
+                            "job_id":   full_row["job_id"],
+                            "csv_path": full_row["_csv_path"],
+                            "field":    "relevance",
+                            "value":    int(edit["relevance"]),
+                        })
 
-            if changes:
-                _write_back(changes)   # clears cache + st.rerun() on success
-
-            # ── Job Details opener ─────────────────────────────────────────
-            st.divider()
-            sel_col, btn_col = st.columns([5, 1])
-            with sel_col:
-                title_map   = dict(zip(active_df["job_id"], active_df["title"]))
-                selected_id = st.selectbox(
-                    "Select job",
-                    options=active_df["job_id"].tolist(),
-                    format_func=lambda jid: f"{jid}  —  {title_map.get(jid, '')}",
-                    label_visibility="collapsed",
-                    key="tab1_select",
-                )
-            with btn_col:
-                if st.button("📖 Open Details", use_container_width=True, key="tab1_open"):
-                    row = active_df[active_df["job_id"] == selected_id].iloc[0]
-                    show_job_modal(
-                        row["job_id"], row["title"], row["_company"], row["_md_dir"]
-                    )
+                if changes:
+                    _write_back(changes)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # TAB 2 — Sent Applications
+    # TAB 2 — Sent Applications (editable — uncheck "App" to undo)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with tab2:
         if sent_df.empty:
             st.info(
-                "No applications sent yet.  \n"
-                "Tick the **✅ Applied** checkbox in the Active Radar tab to start tracking."
+                "No applications tracked yet.  \n"
+                "Tick **App** in the Active Radar tab to log an application."
             )
         else:
-            st.caption("Click any row to open Job Details.")
-            event = st.dataframe(
-                sent_df[_SENT_COLS].reset_index(drop=True),
-                column_config={k: v for k, v in _COL_CFG.items() if k in _SENT_COLS},
-                use_container_width=True,
+            st.caption("Uncheck **App** to return a job to Active Radar.")
+            t2_ver    = st.session_state.get("t2_ver", 0)
+            t2_key    = f"tab2_editor_{t2_ver}"
+            t2_source = sent_df[_SENT_BASE].copy().reset_index(drop=True)
+            t2_source["open_modal"] = False
+
+            edited_sent = st.data_editor(
+                t2_source,
+                column_config={k: v for k, v in _COL_CFG.items() if k in t2_source.columns},
+                width="stretch",
                 hide_index=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="tab2_table",
+                num_rows="fixed",
+                key=t2_key,
             )
-            sel_rows = getattr(getattr(event, "selection", None), "rows", [])
-            if sel_rows:
-                row = sent_df.iloc[sel_rows[0]]
-                show_job_modal(row["job_id"], row["title"], row["_company"], row["_md_dir"])
+
+            # Modal trigger (for-else: break if modal fired, else do write-back)
+            for idx in range(len(edited_sent)):
+                if edited_sent.iloc[idx]["open_modal"]:
+                    row = sent_df.iloc[idx]
+                    st.session_state["t2_ver"] = t2_ver + 1
+                    show_job_modal(row["job_id"], row["title"], row["_company"], row["_md_dir"])
+                    break
+            else:
+                # Undo applied: applied_bool flipped from True → False
+                changes: list[dict] = []
+                for idx in range(min(len(edited_sent), len(t2_source))):
+                    if not edited_sent.iloc[idx]["applied_bool"] and t2_source.iloc[idx]["applied_bool"]:
+                        full_row = sent_df.iloc[idx]
+                        changes.append({
+                            "job_id":   full_row["job_id"],
+                            "csv_path": full_row["_csv_path"],
+                            "field":    "applied",
+                            "value":    "",
+                        })
+                if changes:
+                    _write_back(changes)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # TAB 3 — Archived
+    # TAB 3 — Archived (read-only except for 📖 open_modal)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with tab3:
         if archived_df.empty:
             st.info(
                 "No archived jobs yet.  \n"
-                "Jobs appear here when they are removed from the live company career site "
-                "on the next scraper run (`visible = no`)."
+                "Jobs appear here when removed from the live board on the next scraper run."
             )
         else:
-            st.caption(
-                "Read-only. These postings are no longer active on the company career site. "
-                "Click any row to view the cached Job Description."
-            )
-            event = st.dataframe(
-                archived_df[_ARCHIVED_COLS].reset_index(drop=True),
-                column_config={k: v for k, v in _COL_CFG.items() if k in _ARCHIVED_COLS},
-                use_container_width=True,
+            st.caption("Read-only. Click 📖 to view the cached Job Description.")
+            t3_ver    = st.session_state.get("t3_ver", 0)
+            t3_key    = f"tab3_editor_{t3_ver}"
+            t3_source = archived_df[_ARCHIVED_BASE].copy().reset_index(drop=True)
+            t3_source["open_modal"] = False
+
+            edited_arch = st.data_editor(
+                t3_source,
+                column_config={k: v for k, v in _COL_CFG.items() if k in t3_source.columns},
+                disabled=_ARCHIVED_BASE,   # all content cols read-only; open_modal stays editable
+                width="stretch",
                 hide_index=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="tab3_table",
+                num_rows="fixed",
+                key=t3_key,
             )
-            sel_rows = getattr(getattr(event, "selection", None), "rows", [])
-            if sel_rows:
-                row = archived_df.iloc[sel_rows[0]]
-                show_job_modal(row["job_id"], row["title"], row["_company"], row["_md_dir"])
+
+            for idx in range(len(edited_arch)):
+                if edited_arch.iloc[idx]["open_modal"]:
+                    row = archived_df.iloc[idx]
+                    st.session_state["t3_ver"] = t3_ver + 1
+                    show_job_modal(row["job_id"], row["title"], row["_company"], row["_md_dir"])
+                    break
 
 
 # ---------------------------------------------------------------------------

@@ -47,12 +47,13 @@ pip install -r requirements.txt
 ```
 core-job-tracker/
 ├── config.yaml              ← Company configuration (ATS URLs, search filters)
-├── config_engine.py         ← Config loader + path resolver
-├── workday_scraper.py       ← Workday CXS API scraper + detail fetcher
-├── state_tracker.py         ← Reconciliation engine + Markdown/CSV writer
-├── dashboard.py             ← CLI dashboard (terminal, no dependencies)
+├── src/
+│   ├── __init__.py
+│   ├── config_engine.py     ← Config loader + path resolver
+│   ├── workday_scraper.py   ← Workday CXS API scraper + detail fetcher
+│   └── state_tracker.py     ← Reconciliation engine + Markdown/CSV writer
 ├── web/
-│   └── app.py               ← Streamlit Job Application OS
+│   └── app.py               ← Streamlit Job Application OS (imports from src/)
 ├── targets/
 │   └── [CompanyName]/
 │       ├── master_jobs.csv      ← Canonical state ledger
@@ -66,6 +67,8 @@ core-job-tracker/
 ---
 
 ## Adding a Company
+
+> All backend modules live in `src/` and use try/except relative imports, so they work both when imported as a package (`import src.config_engine`) and when run directly from the project root (`python src/state_tracker.py`).
 
 Open `config.yaml` and add a new entry under `companies:`:
 
@@ -98,7 +101,7 @@ The scraper fetches all live jobs, reconciles them against the existing ledger, 
 
 ```bash
 # From the project root, with venv activated:
-python state_tracker.py
+python src/state_tracker.py
 ```
 
 **Expected output:**
@@ -144,14 +147,14 @@ Open **http://localhost:8501** in your browser.
 
 ---
 
-## CLI Dashboard (No UI Required)
+## Quick Scraper Run (No UI Required)
 
 ```bash
-python dashboard.py                     # Full chronological view
-python dashboard.py --deadlines         # Urgent deadlines only
-python dashboard.py --company Barclays  # Single company
-python dashboard.py --days 30           # 30-day deadline window
+# Run the scraper directly from the terminal:
+python src/state_tracker.py
 ```
+
+> The "🚀 Run Scraper" button in the Streamlit sidebar calls this same command via `subprocess.run`.
 
 ---
 
@@ -176,8 +179,8 @@ python dashboard.py --days 30           # 30-day deadline window
 - [x] Task 1: Config Engine
 - [x] Task 2: Workday CXS Scraper
 - [x] Task 3: State Tracking + Rich Markdown files
-- [x] Task 4: Aggregated CLI Dashboard
-- [x] Task 5: Streamlit Job Application OS
+- [x] Task 4: Streamlit Job Application OS (3-Tab CRM)
+- [x] Task 5: Restructured backend into `src/` package
 - [ ] Task 6: Local LLM Resume Generator (Ollama + LaTeX)
 - [ ] Task 7: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
 - [ ] Task 8: Automated daily scraper scheduler

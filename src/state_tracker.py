@@ -40,8 +40,12 @@ from typing import Any
 
 import requests
 
-import config_engine
-import workday_scraper
+try:
+    from . import config_engine       # when imported as part of the src package
+    from . import workday_scraper     # when imported as part of the src package
+except ImportError:
+    import config_engine              # when run directly: python src/state_tracker.py
+    import workday_scraper
 
 # ---------------------------------------------------------------------------
 # Constants
