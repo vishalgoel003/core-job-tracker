@@ -62,9 +62,10 @@ st.markdown("""
     [data-testid="stMetric"] {
         background    : #1a1a2e;
         border        : 1px solid #2d2d44;
-        border-radius : 10px;
-        padding       : 6px 12px !important;
+        border-radius : 8px;
+        padding       : 4px 8px !important; /* Tighter padding */
     }
+    [data-testid="stMetricValue"] { font-size: 1.2rem !important; }
 
     /* ── Tab labels ── */
     .stTabs [data-baseweb="tab"] {
@@ -118,16 +119,16 @@ def _read_notes(md_text: str) -> str:
     m = _NOTES_RE.search(md_text)
     if not m:
         return ""
-    body = m.group(2).strip()
+    body = m.group(2)
     return "" if body.startswith("<!--") else body
 
 
 def _write_notes(md_text: str, new_notes: str) -> str:
     def _rep(m: re.Match) -> str:
-        return f"## Notes\n\n{new_notes.strip()}"
+        return f"## Notes\n\n{new_notes}"
     result = _NOTES_RE.sub(_rep, md_text, count=1)
     if result == md_text:
-        result = md_text.rstrip() + f"\n\n## Notes\n\n{new_notes.strip()}\n"
+        result = md_text.rstrip() + f"\n\n## Notes\n\n{new_notes}\n"
     return result
 
 
