@@ -252,7 +252,7 @@ _COL_CFG = {
                            ),
     "_company":            st.column_config.TextColumn("Company",  disabled=True, width="small"),
     "job_id":              st.column_config.TextColumn("ID",       disabled=True, width="small"),
-    "title":               st.column_config.TextColumn("Title",    disabled=True, width="large"),
+    "title":               st.column_config.TextColumn("Title",    disabled=True),
     "first_discovered_on": st.column_config.DateColumn("Added",    disabled=True, width="small"),
     "last_date":           st.column_config.DateColumn("Due",      disabled=True, width="small"),
     "applied":             st.column_config.TextColumn("App Date", disabled=True, width="small"),
@@ -270,6 +270,16 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
     st.divider()
 
     md_path = Path(md_dir) / f"job_{job_id}.md"
+    file_mtime = md_path.stat().st_mtime if md_path.exists() else 0
+    notes_key = f"notes_input_{job_id}_{file_mtime}"
+
+    def handle_save():
+        if md_path.exists():
+            current_md = md_path.read_text(encoding="utf-8")
+            new_val = st.session_state.get(notes_key, "")
+            updated_md = _write_notes(current_md, new_val)
+            md_path.write_text(updated_md, encoding="utf-8")
+
     md_text = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
 
     tab_jd, tab_notes, tab_llm = st.tabs([
@@ -289,10 +299,11 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
 
     with tab_notes:
         current_notes = _read_notes(md_text)
-        new_notes = st.text_area(
+        st.text_area(
             "Your notes — saved directly to the `.md` file",
             value=current_notes,
             height=340,
+            key=notes_key,
             placeholder=(
                 "Interview prep notes...\n"
                 "Recruiter contact: ...\n"
@@ -300,13 +311,8 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
                 "Key skills to highlight: ..."
             ),
         )
-        if st.button("💾 Save Notes", type="primary", width="stretch"):
-            if not md_path.exists():
-                st.error("Cannot save — detail file does not exist yet.")
-            else:
-                updated = _write_notes(md_text, new_notes)
-                md_path.write_text(updated, encoding="utf-8")
-                st.success("✅ Notes saved to disk.")
+        if st.button("💾 Save Notes", type="primary", width="stretch", on_click=handle_save):
+            st.success("✅ Notes saved to disk.")
 
     with tab_llm:
         st.info(
@@ -362,9 +368,7 @@ def _render_editor(
 
 def main() -> None:
 
-    # ── Header ──────────────────────────────────────────────────────────────
-    st.markdown("# 🎯 Job Application OS")
-    st.caption("Multi-company tracker · Powered by the Workday CXS scraper pipeline")
+    # ── Initialise ──────────────────────────────────────────────────────────
 
     # ── Load data ───────────────────────────────────────────────────────────
     df = load_all_jobs()
@@ -444,7 +448,7 @@ def main() -> None:
         (base["visible"].str.lower() == "no") & base["applied"].apply(_not_applied)
     ].reset_index(drop=True)
 
-    # ── Funnel Metrics ───────────────────────────────────────────────────────
+    # ── Header & Funnel Metrics ──────────────────────────────────────────────
     today          = pd.Timestamp.today().normalize()
     deadlines_soon = int(
         (
@@ -453,7 +457,11 @@ def main() -> None:
         ).sum()
     )
 
-    m1, m2, m3, m4 = st.columns(4)
+    c_title, m1, m2, m3, m4 = st.columns([1.5, 1, 1, 1, 1], vertical_alignment="bottom")
+    with c_title:
+        st.markdown("### 🎯 Job Application OS")
+        st.caption("Powered by the Workday CXS pipeline")
+
     m1.metric("🎯 Active Radar",      len(active_df))
     m2.metric("📤 Sent",              len(sent_df))
     m3.metric(
@@ -463,8 +471,6 @@ def main() -> None:
         delta_color="inverse" if deadlines_soon else "off",
     )
     m4.metric("🏢 Companies", len(company_filter))
-
-    st.divider()
 
     # ── Tabs ────────────────────────────────────────────────────────────────
     tab1, tab2, tab3 = st.tabs([
@@ -485,6 +491,19 @@ def main() -> None:
             t1_source = active_df[_ACTIVE_BASE].copy().reset_index(drop=True)
             t1_source["open_modal"] = False
 
+            # 1. INTERCEPT STATE BEFORE RENDERING
+            modal_row = None
+            if t1_key in st.session_state:
+                edits = st.session_state[t1_key].get("edited_rows", {})
+                for idx_str, changes in edits.items():
+                    if changes.get("open_modal") is True:
+                        modal_row = active_df.iloc[int(idx_str)]
+                        t1_ver += 1
+                        st.session_state["t1_ver"] = t1_ver
+                        t1_key = f"tab1_editor_{t1_ver}"  # Force fresh editor key
+                        break
+
+            # 2. RENDER EDITOR
             edited = st.data_editor(
                 t1_source,
                 column_config={k: v for k, v in _COL_CFG.items() if k in t1_source.columns},
@@ -494,14 +513,9 @@ def main() -> None:
                 key=t1_key,
             )
 
-            # ── Modal trigger (checked FIRST — if fired, skip write-back) ──
-            for idx in range(len(edited)):
-                if edited.iloc[idx]["open_modal"]:
-                    row = active_df.iloc[idx]
-                    # Increment version → key changes → checkbox resets next rerun
-                    st.session_state["t1_ver"] = t1_ver + 1
-                    show_job_modal(row["job_id"], row["title"], row["_company"], row["_md_dir"])
-                    break   # only one modal per render cycle
+            # 3. TRIGGER MODAL OR PROCESS SAVES
+            if modal_row is not None:
+                show_job_modal(modal_row["job_id"], modal_row["title"], modal_row["_company"], modal_row["_md_dir"])
             else:
                 # ── Write-back: applied_bool + relevance ──────────────────
                 changes: list[dict] = []
@@ -549,6 +563,19 @@ def main() -> None:
             t2_source = sent_df[_SENT_BASE].copy().reset_index(drop=True)
             t2_source["open_modal"] = False
 
+            # 1. INTERCEPT STATE BEFORE RENDERING
+            modal_row = None
+            if t2_key in st.session_state:
+                edits = st.session_state[t2_key].get("edited_rows", {})
+                for idx_str, changes in edits.items():
+                    if changes.get("open_modal") is True:
+                        modal_row = sent_df.iloc[int(idx_str)]
+                        t2_ver += 1
+                        st.session_state["t2_ver"] = t2_ver
+                        t2_key = f"tab2_editor_{t2_ver}"  # Force fresh editor key
+                        break
+
+            # 2. RENDER EDITOR
             edited_sent = st.data_editor(
                 t2_source,
                 column_config={k: v for k, v in _COL_CFG.items() if k in t2_source.columns},
@@ -558,13 +585,9 @@ def main() -> None:
                 key=t2_key,
             )
 
-            # Modal trigger (for-else: break if modal fired, else do write-back)
-            for idx in range(len(edited_sent)):
-                if edited_sent.iloc[idx]["open_modal"]:
-                    row = sent_df.iloc[idx]
-                    st.session_state["t2_ver"] = t2_ver + 1
-                    show_job_modal(row["job_id"], row["title"], row["_company"], row["_md_dir"])
-                    break
+            # 3. TRIGGER MODAL OR PROCESS SAVES
+            if modal_row is not None:
+                show_job_modal(modal_row["job_id"], modal_row["title"], modal_row["_company"], modal_row["_md_dir"])
             else:
                 # Undo applied: applied_bool flipped from True → False
                 changes: list[dict] = []
@@ -596,6 +619,19 @@ def main() -> None:
             t3_source = archived_df[_ARCHIVED_BASE].copy().reset_index(drop=True)
             t3_source["open_modal"] = False
 
+            # 1. INTERCEPT STATE BEFORE RENDERING
+            modal_row = None
+            if t3_key in st.session_state:
+                edits = st.session_state[t3_key].get("edited_rows", {})
+                for idx_str, changes in edits.items():
+                    if changes.get("open_modal") is True:
+                        modal_row = archived_df.iloc[int(idx_str)]
+                        t3_ver += 1
+                        st.session_state["t3_ver"] = t3_ver
+                        t3_key = f"tab3_editor_{t3_ver}"  # Force fresh editor key
+                        break
+
+            # 2. RENDER EDITOR
             edited_arch = st.data_editor(
                 t3_source,
                 column_config={k: v for k, v in _COL_CFG.items() if k in t3_source.columns},
@@ -606,12 +642,9 @@ def main() -> None:
                 key=t3_key,
             )
 
-            for idx in range(len(edited_arch)):
-                if edited_arch.iloc[idx]["open_modal"]:
-                    row = archived_df.iloc[idx]
-                    st.session_state["t3_ver"] = t3_ver + 1
-                    show_job_modal(row["job_id"], row["title"], row["_company"], row["_md_dir"])
-                    break
+            # 3. TRIGGER MODAL OR PROCESS SAVES
+            if modal_row is not None:
+                show_job_modal(modal_row["job_id"], modal_row["title"], modal_row["_company"], modal_row["_md_dir"])
 
 
 # ---------------------------------------------------------------------------

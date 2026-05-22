@@ -1,6 +1,6 @@
 requests
 PyYAML
 html2text
-streamlit
+streamlit>=1.35.0
 pandas
 filelock

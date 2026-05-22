@@ -19,6 +19,7 @@ A self-hosted, multi-company job application CRM built entirely in Python. Scrap
 ## Prerequisites
 
 - Python 3.11+
+- Streamlit 1.35+ (Required for native `@st.dialog` and `vertical_alignment` features)
 - Git Bash or any POSIX-compatible terminal (Windows)
 - A Workday career site URL (to extract your `api_url` and filter facet IDs)
 
