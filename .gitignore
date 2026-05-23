@@ -2,3 +2,4 @@ reference/
 venv/
 __pycache__
 targets
+config.yaml

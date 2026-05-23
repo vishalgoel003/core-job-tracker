@@ -32,7 +32,8 @@ def load_config(path: str = "config.yaml") -> dict:
 
     if not config_path.exists():
         raise FileNotFoundError(
-            f"[ERROR] config.yaml not found at resolved path: {config_path.resolve()}"
+            f"[ERROR] config.yaml not found at: {config_path.resolve()}\n"
+            f"Please copy 'config.yaml.sample' to 'config.yaml' and edit it with your settings before proceeding."
         )
 
     with config_path.open("r", encoding="utf-8") as fh:

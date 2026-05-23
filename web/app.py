@@ -18,6 +18,7 @@ Changes in v2:
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 # Path injection — allows `import src.config_engine` from the project root
@@ -406,10 +407,14 @@ def main() -> None:
                      help="Fetch latest jobs from all configured ATS sources"):
             with st.spinner("Fetching latest jobs from ATS..."):
                 try:
+                    env = os.environ.copy()
+                    env["PYTHONIOENCODING"] = "utf-8"
                     subprocess.run(
                         [sys.executable, "src/state_tracker.py"],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        env=env,
                         check=True,
                         cwd=str(_PROJECT_ROOT),
                     )

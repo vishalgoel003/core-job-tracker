@@ -39,7 +39,12 @@ source venv/Scripts/activate        # Windows Git Bash
 
 # 3. Install all dependencies
 pip install -r requirements.txt
+
+# 4. Create your local config.yaml from the sample template
+cp config.yaml.sample config.yaml          # Linux/macOS/Git Bash
+# or: copy config.yaml.sample config.yaml   # Windows CMD/PowerShell
 ```
+
 
 ---
 
@@ -47,7 +52,8 @@ pip install -r requirements.txt
 
 ```
 core-job-tracker/
-├── config.yaml              ← Company configuration (ATS URLs, search filters)
+├── config.yaml.sample       ← Tracked configuration template
+├── config.yaml              ← Local configuration (untracked, generated from sample)
 ├── src/
 │   ├── __init__.py
 │   ├── config_engine.py     ← Config loader + path resolver
@@ -71,7 +77,8 @@ core-job-tracker/
 
 > All backend modules live in `src/` and use try/except relative imports, so they work both when imported as a package (`import src.config_engine`) and when run directly from the project root (`python src/state_tracker.py`).
 
-Open `config.yaml` and add a new entry under `companies:`:
+Make sure you have created your local `config.yaml` by copying `config.yaml.sample`. Then, open `config.yaml` and add a new entry under `companies:`:
+
 
 ```yaml
 companies:
