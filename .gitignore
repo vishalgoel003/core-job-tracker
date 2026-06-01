@@ -3,3 +3,4 @@ venv/
 __pycache__
 targets
 config.yaml
+user_details/

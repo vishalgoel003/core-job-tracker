@@ -29,7 +29,7 @@ A self-hosted, multi-company job application CRM built entirely in Python. Scrap
 
 ```bash
 # 1. Clone the repository
-git clone <your-repo-url>
+git clone https://github.com/vishalgoel003/core-job-tracker.git
 cd core-job-tracker
 
 # 2. Create and activate a virtual environment
