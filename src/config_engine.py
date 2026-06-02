@@ -11,8 +11,14 @@ Usage (inside activated venv, from project root):
 import os
 import sys
 from pathlib import Path
-
+import re
 import yaml
+
+_ILLEGAL_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
+
+def sanitize_filename(job_id: str) -> str:
+    """Replace Windows-illegal filename characters with '_'."""
+    return _ILLEGAL_FILENAME_CHARS.sub("_", job_id)
 
 
 # ---------------------------------------------------------------------------

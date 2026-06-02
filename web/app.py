@@ -218,7 +218,7 @@ def _write_back(changes: list[dict]) -> None:
                 f"⚠️ Could not acquire write lock on `{csv_path.name}` — "
                 "the background scraper may be running. Try again in a moment."
             )
-            return
+            continue
 
     st.cache_data.clear()
     st.rerun()
@@ -327,7 +327,7 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
         # Resolve paths for this job
         _all_paths = config_engine.resolve_output_paths(_llm_config)
         _path_map = {p["name"]: p for p in _all_paths}
-        _safe_id = re.sub(r'[\\/:*?"<>|]', '_', job_id)
+        _safe_id = config_engine.sanitize_filename(job_id)
 
         _has_providers = len(_providers) > 0
 

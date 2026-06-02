@@ -44,8 +44,6 @@ except ImportError:
 # Constants
 # ---------------------------------------------------------------------------
 
-_ILLEGAL_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
-
 _LOCK_TIMEOUT_S = 5
 
 CSV_COLUMNS: list[str] = [
@@ -138,11 +136,6 @@ Rules:
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-
-def _sanitize_filename(job_id: str) -> str:
-    """Replace Windows-illegal filename characters with '_'."""
-    return _ILLEGAL_FILENAME_CHARS.sub("_", job_id)
-
 
 def _strip_notes_section(md_text: str) -> str:
     """
@@ -436,7 +429,7 @@ def score_job(
     shortcomings_dir = Path(paths["shortcomings_dir"])
     csv_path         = Path(paths["root_dir"]) / "master_jobs.csv"
 
-    safe_id = _sanitize_filename(job_id)
+    safe_id = config_engine.sanitize_filename(job_id)
 
     # 1. Read JD
     md_path = job_details_dir / f"job_{safe_id}.md"
@@ -666,7 +659,7 @@ def main() -> None:
             print(f"[ERROR] Company '{args.company}' not found in config.")
             sys.exit(1)
 
-        safe_id = _sanitize_filename(args.gap_check)
+        safe_id = config_engine.sanitize_filename(args.gap_check)
         shortcomings_path = Path(path_map[args.company]["shortcomings_dir"]) / f"job_{safe_id}.shortcomings.json"
 
         if not shortcomings_path.exists():

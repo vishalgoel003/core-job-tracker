@@ -178,7 +178,9 @@ def _update_rate_limit_state(provider_name: str, response: requests.Response) ->
             state["retry_after_until"] = None
 
     # X-RateLimit-Remaining
-    remaining = response.headers.get("X-RateLimit-Remaining") or response.headers.get("x-ratelimit-remaining")
+    remaining = (response.headers.get("X-RateLimit-Remaining") or 
+                 response.headers.get("x-ratelimit-remaining") or
+                 response.headers.get("x-ratelimit-remaining-requests"))
     if remaining is not None:
         try:
             state["remaining"] = int(remaining)
@@ -186,17 +188,31 @@ def _update_rate_limit_state(provider_name: str, response: requests.Response) ->
             pass
 
     # X-RateLimit-Reset (unix timestamp or seconds)
-    reset = response.headers.get("X-RateLimit-Reset") or response.headers.get("x-ratelimit-reset")
+    reset = (response.headers.get("X-RateLimit-Reset") or 
+             response.headers.get("x-ratelimit-reset") or
+             response.headers.get("x-ratelimit-reset-requests"))
+    
     if reset is not None:
-        try:
-            reset_val = float(reset)
-            # If it looks like a unix timestamp (> year 2000 in seconds)
-            if reset_val > 946684800:
-                state["reset_at"] = reset_val
-            else:
-                state["reset_at"] = time.time() + reset_val
-        except ValueError:
-            pass
+        reset_str = reset.lower()
+        if "m" in reset_str or "s" in reset_str or "h" in reset_str:
+            # Parse formats like "6m0s", "2.1s", "1h"
+            total_s = 0.0
+            for val, unit in re.findall(r'(\d+(?:\.\d+)?)([hms])', reset_str):
+                val_f = float(val)
+                if unit == 'h': total_s += val_f * 3600
+                elif unit == 'm': total_s += val_f * 60
+                elif unit == 's': total_s += val_f
+            if total_s > 0:
+                state["reset_at"] = time.time() + total_s
+        else:
+            try:
+                reset_val = float(reset)
+                if reset_val > 946684800:
+                    state["reset_at"] = reset_val
+                else:
+                    state["reset_at"] = time.time() + reset_val
+            except ValueError:
+                pass
 
 
 def _is_rate_limited(provider_name: str) -> bool:

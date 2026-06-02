@@ -62,8 +62,6 @@ CSV_COLUMNS: list[str] = [
     "applied",
 ]
 
-_ILLEGAL_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
-
 
 # ---------------------------------------------------------------------------
 # Function 1 — Load existing CSV ledger
@@ -122,7 +120,6 @@ def reconcile(
                 "job_id":              job_id,
                 "title":               job.get("title", ""),
                 "first_discovered_on": today,
-                "last_date":           today,
                 "visible":             "yes",
                 "relevance":           job.get("relevance", "TBD"),
                 "applied":             job.get("applied", "no"),
@@ -185,11 +182,6 @@ def write_ledger(ledger: dict[str, dict], csv_path: Path) -> None:
 # Function 4 — Write per-job Markdown detail file
 # ---------------------------------------------------------------------------
 
-def _sanitize_filename(job_id: str) -> str:
-    """Replace Windows-illegal filename characters with '_'."""
-    return _ILLEGAL_FILENAME_CHARS.sub("_", job_id)
-
-
 def write_job_detail(
     job:             dict,
     job_details_dir: Path,
@@ -206,7 +198,7 @@ def write_job_detail(
     placeholders for location and URL, and new rows for Posted Date and Age
     are added to the metadata table.
     """
-    safe_id = _sanitize_filename(job["job_id"])
+    safe_id = config_engine.sanitize_filename(job["job_id"])
     md_path = job_details_dir / f"job_{safe_id}.md"
 
     if md_path.exists():
@@ -322,7 +314,7 @@ def process_company(
     for job in fresh_jobs:
         job_id   = job["job_id"]
         ext_path = job.get("_external_path", "")
-        safe_id  = _sanitize_filename(job_id)
+        safe_id  = config_engine.sanitize_filename(job_id)
         md_path  = job_details_dir / f"job_{safe_id}.md"
 
         # Determine action based on on-disk state
