@@ -83,15 +83,19 @@ def resolve_output_paths(config: dict) -> list[dict]:
         name     = company["name"]
         ats_type = company.get("ats_type", "unknown")
 
-        root_dir        = base_dir / name
-        job_details_dir = root_dir / "job_details"
+        root_dir          = base_dir / name
+        job_details_dir   = root_dir / "job_details"
+        scorecards_dir    = root_dir / "scorecards"
+        shortcomings_dir  = root_dir / "shortcomings"
 
         results.append(
             {
-                "name":            name,
-                "ats_type":        ats_type,
-                "root_dir":        root_dir,
-                "job_details_dir": job_details_dir,
+                "name":              name,
+                "ats_type":          ats_type,
+                "root_dir":          root_dir,
+                "job_details_dir":   job_details_dir,
+                "scorecards_dir":    scorecards_dir,
+                "shortcomings_dir":  shortcomings_dir,
             }
         )
 
@@ -114,12 +118,16 @@ def bootstrap_directories(paths: list[dict]) -> None:
     print("=" * 60)
 
     for entry in paths:
-        name            = entry["name"]
-        job_details_dir = entry["job_details_dir"]
+        name             = entry["name"]
+        job_details_dir  = entry["job_details_dir"]
+        scorecards_dir   = entry["scorecards_dir"]
+        shortcomings_dir = entry["shortcomings_dir"]
 
-        # mkdir(parents=True) creates the employer root AND job_details/ together
+        # mkdir(parents=True) creates the employer root AND subdirs together
         already_existed = job_details_dir.exists()
         job_details_dir.mkdir(parents=True, exist_ok=True)
+        scorecards_dir.mkdir(parents=True, exist_ok=True)
+        shortcomings_dir.mkdir(parents=True, exist_ok=True)
 
         status = "[EXISTS]" if already_existed else "[CREATED]"
 
@@ -127,6 +135,8 @@ def bootstrap_directories(paths: list[dict]) -> None:
         print(f"  Employer  : {name}  (ATS: {entry['ats_type']})")
         print(f"  Root dir  : {entry['root_dir'].resolve()}")
         print(f"  Details   : {job_details_dir.resolve()}  {status}")
+        print(f"  Scorecards: {scorecards_dir.resolve()}")
+        print(f"  Shortcmgs : {shortcomings_dir.resolve()}")
 
     print()
     print("=" * 60)

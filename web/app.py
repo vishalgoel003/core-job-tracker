@@ -19,6 +19,7 @@ Changes in v2:
 import subprocess
 import sys
 import os
+import json
 from pathlib import Path
 
 # Path injection — allows `import src.config_engine` from the project root
@@ -34,6 +35,8 @@ import pandas as pd
 import streamlit as st
 
 import src.config_engine as config_engine
+import src.llm_client as llm_client
+import src.llm_scorer as llm_scorer
 
 # ---------------------------------------------------------------------------
 # Page configuration  (must be the FIRST Streamlit call)
@@ -317,18 +320,208 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
             st.success("✅ Notes saved to disk.")
 
     with tab_llm:
-        st.info(
-            "🔮 **LLM pipeline — coming in the next phase.**  \n"
-            "This tab will invoke your local Ollama model against your master profile "
-            "and this specific JD to produce tailored LaTeX assets."
-        )
+        # Load config for LLM operations
+        _llm_config = config_engine.load_config("config.yaml")
+        _providers, _stage_params = llm_client.load_llm_config(_llm_config)
+
+        # Resolve paths for this job
+        _all_paths = config_engine.resolve_output_paths(_llm_config)
+        _path_map = {p["name"]: p for p in _all_paths}
+        _safe_id = re.sub(r'[\\/:*?"<>|]', '_', job_id)
+
+        _has_providers = len(_providers) > 0
+
+        if company in _path_map:
+            _scorecards_dir = Path(_path_map[company]["scorecards_dir"])
+            _shortcomings_dir = Path(_path_map[company]["shortcomings_dir"])
+            _scorecard_path = _scorecards_dir / f"job_{_safe_id}.scorecard.json"
+            _shortcomings_path = _shortcomings_dir / f"job_{_safe_id}.shortcomings.json"
+        else:
+            _scorecard_path = None
+            _shortcomings_path = None
+
+        if not _has_providers:
+            st.warning(
+                "⚠️ **No LLM providers configured.**  \n"
+                "Add at least one API key to `config.yaml → llm.providers` to enable scoring."
+            )
+
+        # ── Section A: Scorecard ──────────────────────────────────────
+        st.markdown("#### 📋 Job Scorecard")
+
+        _scorecard_exists = _scorecard_path and _scorecard_path.exists()
+        _scorecard_data = None
+
+        if _scorecard_exists:
+            try:
+                _scorecard_data = json.loads(_scorecard_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                _scorecard_data = None
+
+        if _scorecard_data:
+            # Show formatted scorecard
+            meta = _scorecard_data.get("meta", {})
+            st.caption(
+                f"**Role:** {meta.get('role', 'N/A')}  ·  "
+                f"**Domains:** {', '.join(meta.get('domains', []))}  ·  "
+                f"**Level:** {meta.get('seniority_level', 'N/A')}"
+            )
+
+            # Hard filters
+            hard = _scorecard_data.get("hard_filters", {})
+            if any(hard.values()):
+                with st.expander("🚧 Hard Filters", expanded=False):
+                    if hard.get("min_total_yoe"):
+                        st.write(f"• Min YoE: **{hard['min_total_yoe']}**")
+                    if hard.get("specific_credential"):
+                        st.write(f"• Credentials: {', '.join(hard['specific_credential'])}")
+                    if hard.get("regulatory_compliance"):
+                        st.write(f"• Compliance: {', '.join(hard['regulatory_compliance'])}")
+
+            # Pillars table
+            pillars = _scorecard_data.get("pillars", {})
+            if pillars:
+                pillar_rows = []
+                for pname, pdata in pillars.items():
+                    pillar_rows.append({
+                        "Pillar": pname,
+                        "Weight": pdata.get("suggested_weight", 0),
+                        "Required": ", ".join(pdata.get("req", [])),
+                        "Equivalents": ", ".join(pdata.get("equiv", [])),
+                    })
+                st.dataframe(
+                    pd.DataFrame(pillar_rows),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+            # Editable JSON
+            with st.expander("✏️ Edit Scorecard JSON", expanded=False):
+                edited_json = st.text_area(
+                    "Raw JSON — edit and save",
+                    value=json.dumps(_scorecard_data, indent=2),
+                    height=300,
+                    key=f"scorecard_editor_{job_id}",
+                )
+                if st.button("💾 Save Edited Scorecard", key=f"save_sc_{job_id}"):
+                    try:
+                        parsed = json.loads(edited_json)
+                        _scorecard_path.write_text(
+                            json.dumps(parsed, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                        st.success("✅ Scorecard saved.")
+                    except json.JSONDecodeError as e:
+                        st.error(f"❌ Invalid JSON: {e}")
+        else:
+            st.info("No scorecard generated yet for this job.")
+
+        if _has_providers:
+            btn_label = "🔄 Regenerate Scorecard" if _scorecard_data else "⚡ Generate Scorecard"
+            if st.button(btn_label, key=f"gen_sc_{job_id}", type="primary" if not _scorecard_data else "secondary"):
+                with st.spinner("Generating scorecard from job description..."):
+                    jd = md_text
+                    jd_clean = llm_scorer._strip_notes_section(jd) if jd else ""
+                    if jd_clean.strip():
+                        sc = llm_scorer.generate_scorecard(
+                            jd_clean, _providers,
+                            stage_params=_stage_params.get("scorecard"),
+                        )
+                        if sc:
+                            _scorecards_dir.mkdir(parents=True, exist_ok=True)
+                            _scorecard_path.write_text(
+                                json.dumps(sc, indent=2, ensure_ascii=False),
+                                encoding="utf-8",
+                            )
+                            st.success("✅ Scorecard generated!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Scorecard generation failed. Check terminal for details.")
+                    else:
+                        st.warning("Job description is empty.")
+
         st.divider()
-        c1, c2 = st.columns(2)
-        c1.button("⚡ Generate Tailored Resume", disabled=True, width="stretch",
-                  help="Will call local Ollama API: profile.md + JD → LaTeX resume")
-        c2.button("✉️  Generate Cover Letter",   disabled=True, width="stretch",
-                  help="Will call local Ollama API: profile.md + JD → cover letter")
-        st.caption("Generated assets will appear here and be saved to `targets/[company]/generated/`.")
+
+        # ── Section B: Resume Evaluation ──────────────────────────────
+        st.markdown("#### 📊 Resume Evaluation")
+
+        _shortcomings_exists = _shortcomings_path and _shortcomings_path.exists()
+        _shortcomings_data = None
+
+        if _shortcomings_exists:
+            try:
+                _shortcomings_data = json.loads(_shortcomings_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                _shortcomings_data = None
+
+        if _shortcomings_data:
+            sc_rel = _shortcomings_data.get("relevance", 0)
+            sc_gaps = _shortcomings_data.get("shortcomings", [])
+            sc_time = _shortcomings_data.get("evaluated_at", "")
+
+            col_score, col_info = st.columns([1, 3])
+            with col_score:
+                st.metric("Relevance", f"{sc_rel}/100")
+            with col_info:
+                st.caption(f"Evaluated: {sc_time[:19] if sc_time else 'N/A'}")
+                if sc_gaps:
+                    st.markdown("**Shortcomings:**")
+                    for gap in sc_gaps:
+                        st.markdown(f"- {gap}")
+                else:
+                    st.success("No shortcomings identified — strong match!")
+        else:
+            st.info("Resume not yet evaluated against this job.")
+
+        if _has_providers and _scorecard_data:
+            if st.button("📊 Score My Resume", key=f"eval_{job_id}", type="primary" if not _shortcomings_data else "secondary"):
+                with st.spinner("Evaluating resume against scorecard..."):
+                    result = llm_scorer.score_job(
+                        company, job_id, _llm_config,
+                        scorecard_override=_scorecard_data,
+                    )
+                    if "error" in result:
+                        st.error(f"❌ {result['error']}")
+                    else:
+                        st.success(f"✅ Score: {result['relevance']}/100")
+                        st.cache_data.clear()
+                        st.rerun()
+        elif not _scorecard_data and _has_providers:
+            st.caption("Generate a scorecard first to enable resume scoring.")
+
+        st.divider()
+
+        # ── Section C: LinkedIn Gap Check ─────────────────────────────
+        st.markdown("#### 🔍 LinkedIn Gap Analysis")
+
+        if _shortcomings_data and _shortcomings_data.get("shortcomings"):
+            if _has_providers:
+                if st.button("🔍 Check LinkedIn Gaps", key=f"gap_{job_id}"):
+                    with st.spinner("Analyzing LinkedIn data against shortcomings..."):
+                        linkedin_data = llm_scorer._read_linkedin_data(_llm_config)
+                        gap_result = llm_scorer.check_linkedin_gaps(
+                            _shortcomings_data["shortcomings"],
+                            linkedin_data,
+                            _providers,
+                            stage_params=_stage_params.get("gap_analysis"),
+                        )
+                        if gap_result:
+                            if gap_result.get("coverable"):
+                                st.markdown(f"**✅ Coverable gaps ({len(gap_result['coverable'])}):**")
+                                for item in gap_result["coverable"]:
+                                    st.markdown(f"- **{item.get('gap', '')}**")
+                                    st.caption(f"  Evidence: {item.get('evidence', '')} (from {item.get('source_file', '')})")
+                            if gap_result.get("uncoverable"):
+                                st.markdown(f"**❌ Uncoverable gaps ({len(gap_result['uncoverable'])}):**")
+                                for gap in gap_result["uncoverable"]:
+                                    st.markdown(f"- {gap}")
+                        else:
+                            st.error("Gap analysis failed.")
+        elif _shortcomings_data and not _shortcomings_data.get("shortcomings"):
+            st.success("No shortcomings to check — resume is a strong match!")
+        else:
+            st.caption("Score your resume first to enable LinkedIn gap analysis.")
+
 
 
 # ---------------------------------------------------------------------------

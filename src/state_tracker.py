@@ -35,6 +35,7 @@ import csv
 import datetime
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -392,6 +393,23 @@ def process_company(
 
 
 # ---------------------------------------------------------------------------
+# Thread-safe per-company wrapper for parallel execution
+# ---------------------------------------------------------------------------
+
+def _scrape_one(company_cfg: dict, paths: dict) -> dict[str, Any]:
+    """
+    Scrape + process one company. Isolated for thread safety.
+    Each company gets its own requests.Session inside fetch_jobs()
+    and process_company(), and writes to its own CSV file.
+    """
+    name = company_cfg["name"]
+    print(f"  Fetching live jobs for: {name}")
+    fresh_jobs = workday_scraper.fetch_jobs(company_cfg)
+    print()
+    return process_company(company_cfg, fresh_jobs, paths)
+
+
+# ---------------------------------------------------------------------------
 # Standalone verification entrypoint  [EXEC-4.3]
 # ---------------------------------------------------------------------------
 
@@ -409,6 +427,9 @@ def main() -> None:
         print("[ERROR] No companies in config.yaml.")
         sys.exit(1)
 
+    max_workers = config.get("global_settings", {}).get("max_parallel_scrapers", 4)
+
+    workday_companies = []
     for company_cfg in companies:
         ats_type = company_cfg.get("ats_type", "").lower()
         name     = company_cfg.get("name", "unknown")
@@ -421,11 +442,32 @@ def main() -> None:
             print(f"  [ERROR] No path entry for '{name}'. Check config.yaml.")
             sys.exit(1)
 
-        print(f"  Fetching live jobs for: {name}")
-        fresh_jobs = workday_scraper.fetch_jobs(company_cfg)
+        workday_companies.append(company_cfg)
 
+    if not workday_companies:
+        print("[WARN] No supported (workday) companies found.")
+        sys.exit(0)
+
+    if len(workday_companies) == 1:
+        # Single company — run directly, no threading overhead
+        _scrape_one(workday_companies[0], path_map[workday_companies[0]["name"]])
+    else:
+        # Multiple companies — run in parallel
+        effective_workers = min(max_workers, len(workday_companies))
+        print(f"  [PARALLEL] Scraping {len(workday_companies)} companies with {effective_workers} workers")
         print()
-        process_company(company_cfg, fresh_jobs, path_map[name])
+
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            futures = {
+                executor.submit(_scrape_one, c, path_map[c["name"]]): c["name"]
+                for c in workday_companies
+            }
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    print(f"  [ERROR] {name} failed: {exc}")
 
     print()
     print("[DONE] Task 3 complete.")

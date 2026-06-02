@@ -1,6 +1,7 @@
 reference/
 venv/
-__pycache__
-targets
+__pycache__/
+targets/
 config.yaml
 user_details/
+*.lock
