@@ -63,7 +63,8 @@ CSV_COLUMNS: list[str] = [
 
 SCORECARD_SYSTEM_PROMPT = """You are a hiring analyst. Given a job description, extract a structured evaluation scheme as JSON.
 
-Your output JSON must have this exact structure:
+Your output JSON MUST follow this exact structure. The example below shows the required depth and detail — your output MUST match this level:
+
 {
   "meta": {
     "role": "<exact job title>",
@@ -72,24 +73,77 @@ Your output JSON must have this exact structure:
   },
   "hard_filters": {
     "min_total_yoe": <integer or null>,
-    "regulatory_compliance": ["<standard1>", ...] or [],
-    "specific_credential": ["<degree/cert required>", ...] or []
+    "regulatory_compliance": ["<standard1>"] or [],
+    "specific_credential": ["<degree/cert required>"] or []
   },
   "pillars": {
-    "<PILLAR_NAME>": {
+    "<PILLAR_CODE>": {
       "suggested_weight": <integer>,
-      "req": ["<required skill 1>", "<required skill 2>", ...],
-      "equiv": ["<acceptable alternative>", ...] or []
+      "req": ["<specific required skill or technology>", "<another required skill>"],
+      "equiv": ["<acceptable alternative from JD>"] or []
     }
   }
 }
 
+=== EXAMPLE OUTPUT (for a different job — use as a structural template only) ===
+{
+  "meta": {
+    "role": "Lead Software Engineer",
+    "domains": ["Payments", "Enterprise Software"],
+    "seniority_level": "Lead"
+  },
+  "hard_filters": {
+    "min_total_yoe": null,
+    "regulatory_compliance": [],
+    "specific_credential": []
+  },
+  "pillars": {
+    "TECH": {
+      "suggested_weight": 30,
+      "req": ["Core Java", "Spring Boot", "SQL", "RDBMS", "NoSQL"],
+      "equiv": ["C# .NET Core", "Entity Framework", "DynamoDB"]
+    },
+    "SYS": {
+      "suggested_weight": 20,
+      "req": ["Microservices Architecture", "Distributed Systems", "Design Patterns"],
+      "equiv": ["SOA Design", "Event-Driven Architecture"]
+    },
+    "OPS": {
+      "suggested_weight": 15,
+      "req": ["Kafka", "Cloud Deployment", "Maven/Gradle", "GIT"],
+      "equiv": ["RabbitMQ", "AWS ECS", "CI/CD Pipelines"]
+    },
+    "SEC": {
+      "suggested_weight": 15,
+      "req": ["Spring Security", "Authentication Concepts", "Authorization"],
+      "equiv": ["OAuth2", "OIDC", "OWASP Standards"]
+    },
+    "DOM": {
+      "suggested_weight": 10,
+      "req": ["Payments Domain", "Agile Methodologies"],
+      "equiv": ["Fintech", "Scrum"]
+    },
+    "LDR": {
+      "suggested_weight": 5,
+      "req": ["Technical Leadership", "Code Reviews", "Mentoring"],
+      "equiv": ["Team Lead", "Peer Review Coordination"]
+    },
+    "MSC": {
+      "suggested_weight": 5,
+      "req": ["AI Augmented Development", "Intellectual Property Protection"],
+      "equiv": ["GitHub Copilot", "DevSecOps AI Tools"]
+    }
+  }
+}
+=== END EXAMPLE ===
+
 Rules:
-1. Pillar names should be short uppercase labels: TECH, SYSTEM, OPERATIONS, SECURITY, METHOD, LEADER, DOMAIN, MISC, etc.
-2. suggested_weight values across ALL pillars must sum to exactly 1000.
-3. Extract only what the job description explicitly asks for. Do not hallucinate requirements.
-4. "equiv" lists acceptable alternatives mentioned in the JD (e.g., "Java or C#").
-5. Return ONLY valid JSON. No explanations, no markdown fences, no preamble."""
+1. Pillar codes are short uppercase abbreviations (3-4 chars): TECH, SYS, OPS, SEC, DOM, LDR, MSC, DATA, QA, etc. Create as many pillars as the job requires — typically 5-8 for a real job description.
+2. Use relative integer weights for suggested_weight (e.g., 30, 20, 15). They do NOT need to sum to any specific value — they will be normalized automatically.
+3. CRITICAL: "req" must list SPECIFIC technologies, frameworks, tools, or skills named in the JD — NOT generic categories. For example, write "Core Java" and "Spring Boot" instead of "Programming Languages". Write "Kafka" and "Zookeeper" instead of "Messaging". Write "OAuth2" instead of "Security Concepts". Be as granular as the JD text allows.
+4. Every pillar MUST have at least one item in "req". Empty req arrays are not allowed.
+5. "equiv" lists acceptable alternatives explicitly mentioned in the JD (e.g., "Oracle or PostgreSQL", "AWS or Azure or GCP"). Leave empty [] if no alternatives are mentioned.
+6. Return ONLY valid JSON. No explanations, no markdown fences, no preamble."""
 
 EVALUATION_SYSTEM_PROMPT = """You are a resume evaluator. Given a candidate resume and a job scorecard (JSON), evaluate how well the resume matches the job requirements.
 
@@ -263,7 +317,16 @@ def generate_scorecard(
         print("  [SCORER] Scorecard missing 'pillars' key. Invalid response.")
         return None
 
-    # Normalize weights to sum to 1000
+    # Post-validation: warn if scorecard appears collapsed
+    pillars = scorecard.get("pillars", {})
+    if len(pillars) < 3:
+        print(f"  [SCORER] WARNING: Scorecard has only {len(pillars)} pillar(s) — possible schema collapse. Consider re-generating.")
+    else:
+        empty_req = [k for k, v in pillars.items() if not v.get("req")]
+        if empty_req:
+            print(f"  [SCORER] WARNING: Pillar(s) {empty_req} have empty 'req' arrays — possible schema collapse.")
+
+    # Normalize weights to sum to 1000 (models output relative weights, we scale)
     scorecard = _normalize_weights(scorecard)
 
     return scorecard

@@ -4,92 +4,137 @@ global_settings:
   max_parallel_scrapers: 4          # Max concurrent company scraping threads
 
 # ── LLM Provider Configuration ──────────────────────────────────────────────
-# Providers are tried in list order (cascade). On 429/5xx/timeout → next.
-# The client parses Retry-After and X-RateLimit-* response headers for smart
-# backoff, critical when this moves to fully automated async.
+# Routing: Model-First Cascade
+#   Each pipeline stage defines an ordered list of preferred models.
+#   The client exhausts ALL api_keys for ALL capable providers for a given
+#   model before falling back to the next model in the stage's list.
+#   If none of the stage's curated models exist in any configured provider,
+#   the client falls back to trying all available models in config order.
 #
-# You only need ONE working provider. Leave unused api_key fields empty.
-# Local models (Ollama/LM Studio) need no api_key — just the base_url.
-# For Tailscale remote access: use http://<tailscale-hostname>:<port>/v1/...
+# Per-provider:
+#   api_keys: list of API keys (one per free-tier account/"family account")
+#             Omit or leave empty for local endpoints (Ollama/LM Studio).
+#   models:   list of model identifiers this provider can serve.
+#             Keep this updated as providers add new models.
+#   rpm_limit: requests/minute limit PER KEY (each account has its own quota).
+#              Set to 0 for local endpoints (no rate limiting applied).
+#
+# For Tailscale remote GPU access: use http://<tailscale-hostname>:<port>/v1/...
 llm:
   inter_call_delay_s: 2.0          # Polite delay between consecutive LLM calls
-  max_retries_per_provider: 1      # Retries before cascading to next provider
 
   providers:
-    # ── Local Models (fastest, no rate limits, no API key needed) ──────────
-    # Ollama default: http://localhost:11434/v1/chat/completions
-    # LM Studio default: http://localhost:1234/v1/chat/completions
+    # ── Local Models (fastest, no rate limits, no API keys needed) ──────────
+    # Ollama default port: 11434  |  LM Studio default port: 1234
     # Over Tailscale: replace localhost with your Tailscale hostname/IP
     # - name: "ollama-local"
-    #   api_key: ""                  # Not required for local endpoints
     #   base_url: "http://localhost:11434/v1/chat/completions"
-    #   model: "llama3.1:8b"         # Must match a model pulled in Ollama
-    #   rpm_limit: 0                 # 0 = no rate limit
+    #   models:                        # Must match models pulled in Ollama
+    #     - "llama3.1:8b"
+    #     - "qwen2.5:14b"
+    #   rpm_limit: 0                   # No rate limiting for local endpoints
 
-    # - name: "ollama-tailscale"
-    #   api_key: ""
+    # - name: "ollama-tailscale"       # Remote GPU over Tailscale
     #   base_url: "http://my-gpu-laptop:11434/v1/chat/completions"
-    #   model: "qwen2.5:14b"
+    #   models:
+    #     - "qwen2.5:14b"
+    #     - "llama3.1:8b"
     #   rpm_limit: 0
 
     # - name: "lmstudio-local"
-    #   api_key: "not-needed"        # LM Studio requires a non-empty string
+    #   api_keys:
+    #     - "not-needed"               # LM Studio requires a non-empty string
     #   base_url: "http://localhost:1234/v1/chat/completions"
-    #   model: "loaded-model-name"
+    #   models:
+    #     - "loaded-model-name"        # Match the model loaded in LM Studio UI
     #   rpm_limit: 0
 
     # ── Cloud Free-Tier Providers ─────────────────────────────────────────
+    # Add multiple api_keys to pool free-tier accounts ("family accounts").
+    # Each key has its own rpm_limit quota — exhausting one key tries the next.
+
     - name: "groq"
-      api_key: "gsk_xxxxxxxxxxxxxxxxxxxx"       # https://console.groq.com/keys
+      api_keys:                        # https://console.groq.com/keys
+        - "gsk_xxxxxxxxxxxxxxxxxxxx"   # Account 1
+        # - "gsk_yyyyyyyyyyyyyyyyyy"   # Account 2 (uncomment to add)
       base_url: "https://api.groq.com/openai/v1/chat/completions"
-      model: "llama-3.3-70b-versatile"
-      rpm_limit: 30                              # Free-tier requests/minute
+      models:                          # Update as Groq adds new models
+        - "llama-3.3-70b-versatile"    # Best quality; use for scorecard/eval
+        - "llama-3.1-8b-instant"       # Faster/cheaper; use for gap analysis
+        - "gemma2-9b-it"               # Good alternative for lighter tasks
+      rpm_limit: 30                    # Free-tier: 30 req/min per key
+
     - name: "gemini"
-      api_key: "AIzaSyXXXXXXXXXXXXXXXXXXXXXX"   # https://aistudio.google.com/apikey
+      api_keys:                        # https://aistudio.google.com/apikey
+        - "AIzaSyXXXXXXXXXXXXXXXXXXXX"
+        # - "AIzaSyYYYYYYYYYYYYYYYYYYYY"
       base_url: "https://generativelanguage.googleapis.com/v1beta/models"
-      model: "gemini-2.0-flash"
-      rpm_limit: 15
+      models:                          # Update as Google releases new models
+        - "gemini-2.0-flash"           # Fast and capable; good all-rounder
+        - "gemma-3-27b-it"             # Open-weight Google model
+        - "gemini-2.0-flash-lite"      # Lightweight fallback
+      rpm_limit: 15                    # Free-tier: 15 req/min per key
+
     - name: "cerebras"
-      api_key: "csk-xxxxxxxxxxxxxxxxxxxx"        # https://cloud.cerebras.ai
+      api_keys:                        # https://cloud.cerebras.ai
+        - "csk-xxxxxxxxxxxxxxxxxxxx"
       base_url: "https://api.cerebras.ai/v1/chat/completions"
-      model: "llama-3.3-70b"
+      models:
+        - "llama-3.3-70b"
+        - "llama-3.1-8b"
       rpm_limit: 30
+
     # - name: "cohere"
-    #   api_key: ""
+    #   api_keys:
+    #     - ""
     #   base_url: "https://api.cohere.com/v2/chat"
-    #   model: "command-r-plus"
-    #   rpm_limit: 20
-    # - name: "openrouter"
-    #   api_key: ""
-    #   base_url: "https://openrouter.ai/api/v1/chat/completions"
-    #   model: "meta-llama/llama-3.3-70b-instruct:free"
+    #   models:
+    #     - "command-r-plus"
+    #     - "command-r"
     #   rpm_limit: 20
 
-  # ── Per-Stage Model & Parameter Overrides ───────────────────────────────
-  # Each pipeline stage can optionally override the cascade's default model.
-  # If a stage override specifies a provider name, ONLY that provider is used
-  # for that stage (no cascade). If omitted, the default cascade applies.
+    # - name: "openrouter"
+    #   api_keys:
+    #     - ""
+    #   base_url: "https://openrouter.ai/api/v1/chat/completions"
+    #   models:
+    #     - "meta-llama/llama-3.3-70b-instruct:free"
+    #     - "google/gemma-3-27b-it:free"
+    #   rpm_limit: 20
+
+  # ── Per-Stage Model Preferences ──────────────────────────────────────────
+  # Each stage defines an ordered list of models (primary → fallbacks).
+  # The client tries all providers+keys capable of the first model before
+  # moving to the next. If no curated model is available in any configured
+  # provider, all available models are tried in config order.
   #
   # Design rationale:
-  #   - Scorecard generation is structured extraction → low temp, any model
-  #   - Resume evaluation needs nuance → low temp, prefer larger model
-  #   - Gap analysis is search/match → low temp, can use lighter model
+  #   scorecard:   structured extraction → any large model; low temperature
+  #   evaluation:  nuanced scoring → prefer large models for accuracy
+  #   gap_analysis: search/match → lighter model is sufficient
   stages:
     scorecard:
-      temperature: 0.15             # Low for consistent structured output
-      max_tokens: 1500              # Scorecards are ~800-1200 tokens
-      # provider_override: "groq"   # Pin to specific provider (optional)
-      # model_override: ""          # Override the provider's default model
+      temperature: 0.15               # Low for consistent structured output
+      max_tokens: 1500                # Scorecards are ~800-1200 tokens
+      models:
+        - "llama-3.3-70b-versatile"   # Groq — best structured output
+        - "gemini-2.0-flash"          # Gemini fallback
+        - "llama-3.3-70b"             # Cerebras fallback
     evaluation:
-      temperature: 0.10             # Very low for reproducible scoring
-      max_tokens: 800               # Score + shortcomings list
-      # provider_override: ""       # Prefer larger models for accuracy
-      # model_override: ""
+      temperature: 0.10               # Very low for reproducible scoring
+      max_tokens: 800                 # Score + shortcomings list
+      models:
+        - "llama-3.3-70b-versatile"   # Prefer large model for nuance
+        - "gemini-2.0-flash"
+        - "llama-3.3-70b"
     gap_analysis:
-      temperature: 0.10             # Low for factual matching
-      max_tokens: 1200              # Coverable + uncoverable lists
-      # provider_override: "ollama-local"  # Good candidate for local model
-      # model_override: ""
+      temperature: 0.10               # Low for factual matching
+      max_tokens: 1200                # Coverable + uncoverable lists
+      models:
+        - "llama-3.1-8b-instant"      # Light task → fast/cheap model
+        - "gemma-3-27b-it"            # Gemini lightweight fallback
+        - "llama-3.1-8b"              # Cerebras fallback
+        # - "llama3.1:8b"             # Uncomment if Ollama is running locally
 
 # ── User Profile Paths ──────────────────────────────────────────────────────
 # Used by the LLM scoring pipeline to evaluate resume against job scorecards.

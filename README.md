@@ -27,13 +27,13 @@ Pass 2: Resume + Scorecard → LLM → Score + Gaps      (how well do I match?)
 Pass 3: Shortcomings + LinkedIn → LLM → Gap Report    (can I cover the gaps?)
 ```
 
-Each pipeline stage has its own **temperature and max_tokens** settings in `config.yaml`, and can optionally be pinned to a specific provider (e.g., use a local Ollama model for gap analysis to save cloud tokens).
+Each pipeline stage defines an ordered list of preferred models in `config.yaml`. The client uses a **Model-First Cascade** to route requests.
 
-**Scorecard** — The LLM extracts pillars (TECH, SYSTEM, OPERATIONS, etc.) with weighted requirements that sum to 1000. You can view and edit the scorecard in the UI before scoring.
+**Scorecard** — The LLM extracts pillars (TECH, SYS, OPS, SEC, DOM, LDR, MSC, etc.) with relative weights that are auto-normalized to sum to 1000. A 1-shot JSON example in the prompt prevents schema collapse on smaller models. You can view and edit the scorecard in the UI before scoring.
 
 **Shortcomings** — Specific, actionable gaps (not vague observations) are saved to disk and displayed in the UI. Old shortcomings never contaminate new LLM calls.
 
-**Provider Cascade** — Tries providers in config order. On 429/rate-limit, parses `Retry-After` and `X-RateLimit-*` headers and cascades to the next provider. Supports cloud APIs and local endpoints (Ollama, LM Studio via Tailscale).
+**Model-First Cascade** — Stages specify models in preference order (e.g., `llama-3.3-70b-versatile` → `gemini-2.0-flash`). For each model, the client finds all providers capable of serving it and round-robins through **all API keys** (family accounts) before advancing to the next model. `rpm_limit` is tracked **per key**, not per provider. Supports cloud APIs and local endpoints (Ollama, LM Studio via Tailscale).
 
 ---
 

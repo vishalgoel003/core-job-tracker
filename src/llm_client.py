@@ -1,15 +1,19 @@
 """
-llm_client.py — LLM API Client with Provider Cascade & Rate-Limit Awareness
------------------------------------------------------------------------------
+llm_client.py — LLM API Client with Model-First Cascade & Per-Key Rate-Limit Awareness
+----------------------------------------------------------------------------------------
 Thin HTTP wrapper supporting cloud free-tier APIs (Groq, Gemini, Cerebras,
 Cohere, OpenRouter) and local endpoints (Ollama, LM Studio) via a unified
-cascade failover mechanism.
+model-first cascade failover mechanism.
 
 Key design decisions:
-  - Provider cascade: try providers in config order; on 429/5xx/timeout → next.
-  - Per-stage parameters: temperature, max_tokens, and optional provider pinning.
-  - Smart rate-limit awareness: parses Retry-After and X-RateLimit-* headers.
-  - Local models (rpm_limit=0): skip all throttling.
+  - Model-first cascade: stages define an ordered list of preferred models.
+    The client finds all providers capable of serving each model, then
+    exhausts all API keys for those providers before falling back to the
+    next model in the list.
+  - Per-key rate-limit tracking: each (provider, api_key) pair has its own
+    rate-limit state. One exhausted key does not block sibling keys.
+  - Round-robin key exhaustion: all keys for all capable providers are tried
+    before the cascade advances to the next model.
   - Auto-detect adapter type from base_url (openai/gemini/cohere).
   - Zero SDK dependencies — pure requests [TECH-1.2], [TECH-1.5].
 
@@ -57,20 +61,23 @@ USER_AGENT: str = (
 class ProviderConfig:
     """Configuration for a single LLM provider endpoint."""
     name: str
-    api_key: str            # Empty string for local endpoints
+    api_keys: list[str]     # Multiple keys for family accounts; [""] for local
     base_url: str
-    model: str
-    rpm_limit: int          # 0 = unlimited (local models)
+    models: list[str]       # Ordered list of models this provider can serve
+    rpm_limit: int          # Per-key requests/minute limit; 0 = unlimited (local)
     adapter: str = ""       # "openai" | "gemini" | "cohere" — auto-detected
 
 
 @dataclass
 class StageParams:
-    """Per-pipeline-stage parameters (temperature, max_tokens, overrides)."""
+    """Per-pipeline-stage parameters (temperature, max_tokens, model preference)."""
     temperature: float = 0.15
     max_tokens: int = 1500
-    provider_override: str | None = None    # Pin to a specific provider name
-    model_override: str | None = None       # Override provider's default model
+    models: list[str] = field(default_factory=list)
+    # Ordered list of preferred model names for this stage.
+    # The client exhausts all keys for all providers capable of serving
+    # each model before falling back to the next model in the list.
+    # If empty, all available models across all providers are tried in order.
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +85,8 @@ class StageParams:
 # ---------------------------------------------------------------------------
 
 _rate_limit_state: dict[str, dict[str, Any]] = {}
-# e.g. {"groq": {"remaining": 5, "reset_at": 1717350000.0, "retry_after": None}}
+# Key format: "provider_name::key_suffix"  e.g. "groq::abc...xyz8"
+# where key_suffix is the last 8 chars of the API key (safe for logging)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +108,12 @@ def _detect_adapter(base_url: str) -> str:
     return "openai"
 
 
+def _rate_key(provider_name: str, api_key: str) -> str:
+    """Build composite rate-limit state key from provider name and key suffix."""
+    suffix = api_key[-8:] if len(api_key) >= 8 else api_key or "local"
+    return f"{provider_name}::{suffix}"
+
+
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
@@ -108,9 +122,16 @@ def load_llm_config(config: dict) -> tuple[list[ProviderConfig], dict[str, Stage
     """
     Parse llm.providers and llm.stages from config dict.
 
+    Provider config (new schema):
+      api_keys: list of strings  — multiple accounts per provider
+      models:   list of strings  — models this provider can serve
+
+    Stage config (new schema):
+      models: ordered list of preferred models for this stage
+
     Returns:
         (providers, stage_params_map)
-        - providers: list of ProviderConfig, in cascade order
+        - providers: list of ProviderConfig, in config order
         - stage_params_map: dict mapping stage name → StageParams
     """
     llm_cfg = config.get("llm") or {}
@@ -118,27 +139,44 @@ def load_llm_config(config: dict) -> tuple[list[ProviderConfig], dict[str, Stage
 
     providers: list[ProviderConfig] = []
     for p in raw_providers:
-        api_key = str(p.get("api_key") or "").strip()
         base_url = str(p.get("base_url") or "").strip()
-
-        # Skip providers with no base_url
         if not base_url:
             continue
 
-        # Skip cloud providers with empty API key (local providers are fine)
-        is_local = base_url.startswith("http://localhost") or base_url.startswith("http://127.0.0.1") or ":" in base_url.replace("https://", "").replace("http://", "").split("/")[0]
-        # Actually, better heuristic: rpm_limit=0 or explicitly no api_key needed
+        # Parse api_keys — list of strings; default to [""] for local endpoints
+        raw_keys = p.get("api_keys") or []
+        if isinstance(raw_keys, str):
+            raw_keys = [raw_keys]
+        api_keys: list[str] = [str(k).strip() for k in raw_keys if str(k).strip()]
+        if not api_keys:
+            api_keys = [""]  # local endpoint — no key needed
+
+        # Parse models
+        raw_models = p.get("models") or []
+        if isinstance(raw_models, str):
+            raw_models = [raw_models]
+        models: list[str] = [str(m).strip() for m in raw_models if str(m).strip()]
+        if not models:
+            continue  # provider with no models configured is unusable
+
         rpm_limit = int(p.get("rpm_limit") or 0)
 
-        # For cloud providers, skip if api_key looks like a placeholder
-        if rpm_limit > 0 and (not api_key or api_key.startswith("gsk_xxx") or api_key.startswith("AIzaSyXX") or api_key.startswith("csk-xxx")):
-            continue
+        # For cloud providers, skip if all keys look like placeholders
+        if rpm_limit > 0:
+            real_keys = [
+                k for k in api_keys
+                if k and not any(k.startswith(prefix) for prefix in
+                                 ("gsk_xxx", "AIzaSyXX", "csk-xxx", "sk-xxx"))
+            ]
+            if not real_keys:
+                continue
+            api_keys = real_keys
 
         provider = ProviderConfig(
             name=str(p.get("name") or "unnamed"),
-            api_key=api_key,
+            api_keys=api_keys,
             base_url=base_url,
-            model=str(p.get("model") or ""),
+            models=models,
             rpm_limit=rpm_limit,
         )
         provider.adapter = _detect_adapter(base_url)
@@ -150,11 +188,15 @@ def load_llm_config(config: dict) -> tuple[list[ProviderConfig], dict[str, Stage
     for stage_name, stage_cfg in raw_stages.items():
         if not isinstance(stage_cfg, dict):
             continue
+        raw_stage_models = stage_cfg.get("models") or []
+        if isinstance(raw_stage_models, str):
+            raw_stage_models = [raw_stage_models]
+        stage_models = [str(m).strip() for m in raw_stage_models if str(m).strip()]
+
         params = StageParams(
             temperature=float(stage_cfg.get("temperature", 0.15)),
             max_tokens=int(stage_cfg.get("max_tokens", 1500)),
-            provider_override=stage_cfg.get("provider_override") or None,
-            model_override=stage_cfg.get("model_override") or None,
+            models=stage_models,
         )
         stage_params_map[stage_name] = params
 
@@ -165,9 +207,9 @@ def load_llm_config(config: dict) -> tuple[list[ProviderConfig], dict[str, Stage
 # Rate-limit helpers
 # ---------------------------------------------------------------------------
 
-def _update_rate_limit_state(provider_name: str, response: requests.Response) -> None:
-    """Parse rate-limit headers from response and update module-level state."""
-    state = _rate_limit_state.setdefault(provider_name, {})
+def _update_rate_limit_state(rate_key: str, response: requests.Response) -> None:
+    """Parse rate-limit headers from response and update per-key state."""
+    state = _rate_limit_state.setdefault(rate_key, {})
 
     # Retry-After (seconds or HTTP-date)
     retry_after = response.headers.get("Retry-After")
@@ -177,8 +219,8 @@ def _update_rate_limit_state(provider_name: str, response: requests.Response) ->
         except ValueError:
             state["retry_after_until"] = None
 
-    # X-RateLimit-Remaining
-    remaining = (response.headers.get("X-RateLimit-Remaining") or 
+    # X-RateLimit-Remaining — try both standard and Groq/Cerebras variants
+    remaining = (response.headers.get("X-RateLimit-Remaining") or
                  response.headers.get("x-ratelimit-remaining") or
                  response.headers.get("x-ratelimit-remaining-requests"))
     if remaining is not None:
@@ -187,37 +229,37 @@ def _update_rate_limit_state(provider_name: str, response: requests.Response) ->
         except ValueError:
             pass
 
-    # X-RateLimit-Reset (unix timestamp or seconds)
-    reset = (response.headers.get("X-RateLimit-Reset") or 
+    # X-RateLimit-Reset — try both standard and Groq/Cerebras variants
+    reset = (response.headers.get("X-RateLimit-Reset") or
              response.headers.get("x-ratelimit-reset") or
              response.headers.get("x-ratelimit-reset-requests"))
-    
     if reset is not None:
         reset_str = reset.lower()
-        if "m" in reset_str or "s" in reset_str or "h" in reset_str:
-            # Parse formats like "6m0s", "2.1s", "1h"
+        if any(c in reset_str for c in ("m", "s", "h")):
+            # Parse duration strings like "6m0s", "2.1s", "1h"
             total_s = 0.0
             for val, unit in re.findall(r'(\d+(?:\.\d+)?)([hms])', reset_str):
                 val_f = float(val)
-                if unit == 'h': total_s += val_f * 3600
-                elif unit == 'm': total_s += val_f * 60
-                elif unit == 's': total_s += val_f
+                if unit == 'h':
+                    total_s += val_f * 3600
+                elif unit == 'm':
+                    total_s += val_f * 60
+                elif unit == 's':
+                    total_s += val_f
             if total_s > 0:
                 state["reset_at"] = time.time() + total_s
         else:
             try:
                 reset_val = float(reset)
-                if reset_val > 946684800:
-                    state["reset_at"] = reset_val
-                else:
-                    state["reset_at"] = time.time() + reset_val
+                # If it looks like a unix timestamp (> year 2000 in seconds)
+                state["reset_at"] = reset_val if reset_val > 946684800 else time.time() + reset_val
             except ValueError:
                 pass
 
 
-def _is_rate_limited(provider_name: str) -> bool:
-    """Check if a provider is currently rate-limited based on observed headers."""
-    state = _rate_limit_state.get(provider_name)
+def _is_rate_limited(rate_key: str) -> bool:
+    """Check if a provider+key is currently rate-limited based on observed headers."""
+    state = _rate_limit_state.get(rate_key)
     if not state:
         return False
 
@@ -235,7 +277,7 @@ def _is_rate_limited(provider_name: str) -> bool:
         if reset_at and now < reset_at:
             return True
         else:
-            # Reset window has passed, clear state
+            # Reset window has passed, clear stale state
             state.pop("remaining", None)
             state.pop("reset_at", None)
 
@@ -248,6 +290,8 @@ def _is_rate_limited(provider_name: str) -> bool:
 
 def _build_openai_request(
     provider: ProviderConfig,
+    api_key: str,
+    model: str,
     system_prompt: str,
     user_prompt: str,
     temperature: float,
@@ -265,16 +309,11 @@ def _build_openai_request(
         "Content-Type": "application/json",
         "User-Agent": USER_AGENT,
     }
-
-    # Auth header handling
-    if provider.api_key:
-        headers["Authorization"] = f"Bearer {provider.api_key}"
-    elif "lmstudio" in provider.name.lower():
-        headers["Authorization"] = "Bearer not-needed"
-    # Ollama with empty key: omit Authorization header entirely
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     body: dict[str, Any] = {
-        "model": provider.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -291,6 +330,8 @@ def _build_openai_request(
 
 def _build_gemini_request(
     provider: ProviderConfig,
+    api_key: str,
+    model: str,
     system_prompt: str,
     user_prompt: str,
     temperature: float,
@@ -298,11 +339,11 @@ def _build_gemini_request(
     json_mode: bool,
 ) -> tuple[str, dict, dict]:
     """
-    Build request for Google Gemini's generateContent API.
+    Build request for Google Gemini API (generateContent endpoint).
     Returns: (url, headers, body)
     """
-    model = provider.model
-    url = f"{provider.base_url.rstrip('/')}/{model}:generateContent?key={provider.api_key}"
+    base = provider.base_url.rstrip("/")
+    url = f"{base}/{model}:generateContent?key={api_key}"
 
     headers = {
         "Content-Type": "application/json",
@@ -310,13 +351,8 @@ def _build_gemini_request(
     }
 
     body: dict[str, Any] = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": f"{system_prompt}\n\n{user_prompt}"}
-                ]
-            }
-        ],
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"parts": [{"text": user_prompt}]}],
         "generationConfig": {
             "temperature": temperature,
             "maxOutputTokens": max_tokens,
@@ -331,6 +367,8 @@ def _build_gemini_request(
 
 def _build_cohere_request(
     provider: ProviderConfig,
+    api_key: str,
+    model: str,
     system_prompt: str,
     user_prompt: str,
     temperature: float,
@@ -345,12 +383,12 @@ def _build_cohere_request(
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {provider.api_key}",
+        "Authorization": f"Bearer {api_key}",
         "User-Agent": USER_AGENT,
     }
 
     body: dict[str, Any] = {
-        "model": provider.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -423,16 +461,16 @@ def extract_json(raw_text: str) -> dict | None:
     except json.JSONDecodeError:
         pass
 
-    # Attempt 2: extract from markdown fence
-    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    # Attempt 2: strip markdown fences
+    fence_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', text)
     if fence_match:
         try:
             return json.loads(fence_match.group(1).strip())
         except json.JSONDecodeError:
             pass
 
-    # Attempt 3: find first { ... } block
-    brace_match = re.search(r"\{.*\}", text, re.DOTALL)
+    # Attempt 3: extract first {...} block
+    brace_match = re.search(r'\{[\s\S]*\}', text)
     if brace_match:
         try:
             return json.loads(brace_match.group(0))
@@ -443,7 +481,7 @@ def extract_json(raw_text: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Core LLM call with cascade
+# Core LLM call with model-first cascade
 # ---------------------------------------------------------------------------
 
 def call_llm(
@@ -455,14 +493,24 @@ def call_llm(
     json_mode: bool = True,
 ) -> tuple[str | None, ProviderConfig | None]:
     """
-    Try LLM providers in cascade order. Returns (response_text, used_provider).
+    Try LLM providers in model-first cascade order.
+    Returns (response_text, used_provider) or (None, None) on total failure.
 
-    If stage_params.provider_override is set, skip straight to that provider.
-    On 429/5xx/timeout → cascade to next provider.
-    If all exhausted → return (None, None), never crash.
+    Cascade algorithm:
+      1. Determine ordered model list from stage_params.models.
+         If empty, build from all providers in config order.
+         If curated models don't exist in any provider, fall back to all available.
+      2. For each model:
+         a. Find all providers capable of serving it (provider.models contains model).
+         b. For each capable provider, round-robin through ALL api_keys:
+            - If key is rate-limited → skip to next key
+            - On 429 → update per-key rate-limit state → next key
+            - On success → return immediately
+         c. If all keys for all capable providers exhausted → next model
+      3. If all models exhausted → return (None, None), never crash.
 
-    [NET-2.1] Uses requests.Session() for each attempt.
-    [NET-2.4] Parses and respects rate-limit headers.
+    [NET-2.1] Uses requests.Session() for all attempts.
+    [NET-2.4] Parses and respects rate-limit headers per key.
     """
     if not providers:
         print("  [LLM] No providers configured. Check config.yaml llm.providers section.")
@@ -472,81 +520,100 @@ def call_llm(
     temperature = params.temperature
     max_tokens = params.max_tokens
 
-    # Determine effective provider list
-    effective_providers = providers
-    if params.provider_override:
-        pinned = [p for p in providers if p.name == params.provider_override]
-        if pinned:
-            effective_providers = pinned
-        else:
-            print(f"  [LLM] WARNING: provider_override '{params.provider_override}' not found. Using full cascade.")
+    # Build the ordered model list
+    requested_models = list(params.models)  # copy
+
+    if requested_models:
+        # Verify at least one curated model is available in some provider
+        available = any(m in p.models for m in requested_models for p in providers)
+        if not available:
+            print(f"  [LLM] WARNING: No provider has any of {requested_models}. Falling back to all available models.")
+            requested_models = []
+
+    if not requested_models:
+        # Fallback: gather all models from all providers, preserving config order
+        seen: set[str] = set()
+        for p in providers:
+            for m in p.models:
+                if m not in seen:
+                    requested_models.append(m)
+                    seen.add(m)
 
     session = requests.Session()
-    llm_config_section = {}  # for inter_call_delay_s — loaded at call site
 
-    for provider in effective_providers:
-        model = params.model_override or provider.model
+    for model in requested_models:
+        # All providers capable of serving this model
+        capable_providers = [p for p in providers if model in p.models]
 
-        # Skip rate-limited providers (cloud only)
-        if provider.rpm_limit > 0 and _is_rate_limited(provider.name):
-            print(f"  [LLM] Skipping {provider.name} — rate limited")
-            continue
+        for provider in capable_providers:
+            adapter = provider.adapter
 
-        # Build adapter-specific request
-        adapter = provider.adapter
-        if adapter == "gemini":
-            url, headers, body = _build_gemini_request(
-                provider, system_prompt, user_prompt, temperature, max_tokens, json_mode
-            )
-        elif adapter == "cohere":
-            url, headers, body = _build_cohere_request(
-                provider, system_prompt, user_prompt, temperature, max_tokens, json_mode
-            )
-        else:
-            url, headers, body = _build_openai_request(
-                provider, system_prompt, user_prompt, temperature, max_tokens, json_mode
-            )
+            for api_key in provider.api_keys:
+                rk = _rate_key(provider.name, api_key)
 
-        print(f"  [LLM] Trying {provider.name} ({model}) ...")
+                # Skip rate-limited keys (cloud only)
+                if provider.rpm_limit > 0 and _is_rate_limited(rk):
+                    print(f"  [LLM] Skipping {provider.name} ({api_key[-4:]}...) — rate limited")
+                    continue
 
-        try:
-            response = session.post(url, json=body, headers=headers, timeout=60)
-        except requests.exceptions.RequestException as exc:
-            print(f"  [LLM] {provider.name} network error: {exc}")
-            continue
+                # Build adapter-specific request
+                if adapter == "gemini":
+                    url, headers, body = _build_gemini_request(
+                        provider, api_key, model,
+                        system_prompt, user_prompt, temperature, max_tokens, json_mode
+                    )
+                elif adapter == "cohere":
+                    url, headers, body = _build_cohere_request(
+                        provider, api_key, model,
+                        system_prompt, user_prompt, temperature, max_tokens, json_mode
+                    )
+                else:
+                    url, headers, body = _build_openai_request(
+                        provider, api_key, model,
+                        system_prompt, user_prompt, temperature, max_tokens, json_mode
+                    )
 
-        # Update rate-limit state from response headers
-        if provider.rpm_limit > 0:
-            _update_rate_limit_state(provider.name, response)
+                key_label = f"...{api_key[-4:]}" if api_key else "local"
+                print(f"  [LLM] Trying {provider.name} ({model}) key={key_label} ...")
 
-        if response.status_code == 429:
-            print(f"  [LLM] {provider.name} returned 429 (rate limited). Cascading to next.")
-            continue
+                try:
+                    response = session.post(url, json=body, headers=headers, timeout=60)
+                except requests.exceptions.RequestException as exc:
+                    print(f"  [LLM] {provider.name} network error: {exc}")
+                    continue
 
-        if response.status_code >= 500:
-            print(f"  [LLM] {provider.name} returned {response.status_code} (server error). Cascading.")
-            continue
+                # Update per-key rate-limit state from response headers
+                if provider.rpm_limit > 0:
+                    _update_rate_limit_state(rk, response)
 
-        if response.status_code != 200:
-            print(f"  [LLM] {provider.name} returned HTTP {response.status_code}")
-            print(f"         Body (first 300 chars): {response.text[:300]}")
-            continue
+                if response.status_code == 429:
+                    print(f"  [LLM] {provider.name} key={key_label} 429 — trying next key.")
+                    continue
 
-        try:
-            response_json = response.json()
-        except ValueError:
-            print(f"  [LLM] {provider.name} returned non-JSON response")
-            continue
+                if response.status_code >= 500:
+                    print(f"  [LLM] {provider.name} returned {response.status_code} (server error). Trying next.")
+                    continue
 
-        text = _extract_response_text(adapter, response_json)
-        if text:
-            print(f"  [LLM] Success from {provider.name} ({len(text)} chars)")
-            return text, provider
-        else:
-            print(f"  [LLM] {provider.name} returned empty content. Cascading.")
-            continue
+                if response.status_code != 200:
+                    print(f"  [LLM] {provider.name} returned HTTP {response.status_code}")
+                    print(f"         Body (first 300 chars): {response.text[:300]}")
+                    continue
 
-    print("  [LLM] All providers exhausted. No response obtained.")
+                try:
+                    response_json = response.json()
+                except ValueError:
+                    print(f"  [LLM] {provider.name} returned non-JSON response")
+                    continue
+
+                text = _extract_response_text(adapter, response_json)
+                if text:
+                    print(f"  [LLM] Success from {provider.name} ({model}) — {len(text)} chars")
+                    return text, provider
+                else:
+                    print(f"  [LLM] {provider.name} returned empty content. Trying next.")
+                    continue
+
+    print("  [LLM] All models × providers × keys exhausted. No response obtained.")
     return None, None
 
 
@@ -568,8 +635,12 @@ def main() -> None:
         print("        Ensure at least one provider has a valid api_key (or is a local endpoint).")
         sys.exit(1)
 
-    print(f"[OK] {len(providers)} provider(s) loaded: {[p.name for p in providers]}")
+    print(f"[OK] {len(providers)} provider(s) loaded:")
+    for p in providers:
+        print(f"     - {p.name}: {len(p.api_keys)} key(s), models={p.models}")
     print(f"[OK] {len(stage_params)} stage config(s): {list(stage_params.keys())}")
+    for sn, sp in stage_params.items():
+        print(f"     - {sn}: models={sp.models}, temp={sp.temperature}, max_tokens={sp.max_tokens}")
     print()
 
     # Try a trivial JSON extraction prompt
