@@ -81,7 +81,7 @@ llm:
       models:                          # Update as Google releases new models
         - "gemini-3.5-flash"           # Fast, capable, massive context
         - "gemini-2.5-flash"
-        - "gemma-4-31b"
+        - "gemma-4-31b-it"
       rpm_limit: 15                    # Free-tier: 15 req/min per key
 
     - name: "cerebras"
@@ -99,7 +99,7 @@ llm:
       base_url: "https://openrouter.ai/api/v1/chat/completions"
       models:
         - "openai/gpt-oss-120b:free"
-        - "google/gemma-4-31b:free"
+        - "google/gemma-4-31b-it:free"
         - "qwen/qwen3-next-80b-a3b-instruct:free"
       rpm_limit: 20
 
@@ -117,7 +117,7 @@ llm:
   # Rate limit awareness:
   #   - gpt-oss-120b: available on Groq (30 RPM), OpenRouter (20 RPM), Cerebras (5 RPM)
   #   - Gemini flash models: only 20 RPD — use sparingly, not for batch
-  #   - gemma-4-31b: 1,500 RPD + unlimited TPM — best Google workhorse
+  #   - gemma-4-31b-it: 1,500 RPD + unlimited TPM — best Google workhorse
   #   - qwen/qwen3-32b: 60 RPM on Groq — best throughput fallback
   stages:
     scorecard:
@@ -137,14 +137,14 @@ llm:
         - "openai/gpt-oss-120b"       # Groq — best accuracy for scoring
         - "openai/gpt-oss-120b:free"  # OpenRouter fallback
         - "qwen/qwen3-32b"            # Groq — 60 RPM high throughput
-        - "gemma-4-31b"               # Google — 1,500 RPD, unlimited TPM
+        - "gemma-4-31b-it"               # Google — 1,500 RPD, unlimited TPM
     gap_analysis:
       temperature: 0.10               # Low for factual matching
       max_tokens: 1200                # Coverable + uncoverable lists
       models:
         - "gemini-3.5-flash"          # Massive 1M+ context, ideal for LinkedIn data
-        - "gemma-4-31b"               # Google — 1,500 RPD fallback
-        - "google/gemma-4-31b:free"   # OpenRouter — additional Gemma capacity
+        - "gemma-4-31b-it"               # Google — 1,500 RPD fallback
+        - "google/gemma-4-31b-it:free"   # OpenRouter — additional Gemma capacity
         - "openai/gpt-oss-120b"       # Groq — if Google is exhausted
 
 # ── User Profile Paths ──────────────────────────────────────────────────────

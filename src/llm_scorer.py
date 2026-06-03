@@ -694,6 +694,202 @@ def score_all_unscored(
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def run_debug_matrix(config: dict) -> None:
+    """
+    Force-test every (stage × model × provider × key) combination.
+    Prints a success-rate matrix for configuration tuning.
+    
+    Uses a short, standardized test JD for scorecard, a minimal
+    scorecard+resume for evaluation, and minimal shortcomings for gap_analysis.
+    """
+    import time as _time
+
+    providers, stage_params_map = llm_client.load_llm_config(config)
+    if not providers:
+        print("[ERROR] No LLM providers configured.")
+        return
+
+    # --- Test prompts for each stage ---
+    test_jd = (
+        "## Software Engineer\n\n"
+        "Requirements:\n"
+        "- 3+ years Java experience\n"
+        "- Spring Boot, Kafka, PostgreSQL\n"
+        "- Docker, Kubernetes\n"
+        "- Agile methodology\n"
+    )
+    test_scorecard = {
+        "meta": {"role": "Software Engineer", "domains": ["Backend"], "seniority_level": "Mid"},
+        "hard_filters": {"min_total_yoe": 3, "regulatory_compliance": [], "specific_credential": []},
+        "pillars": {
+            "TECH": {"suggested_weight": 500, "req": ["Java", "Spring Boot"], "equiv": []},
+            "OPS": {"suggested_weight": 500, "req": ["Docker", "Kubernetes"], "equiv": []},
+        },
+    }
+    test_resume = "## Software Engineer\n- 5 years Java, Spring Boot\n- Docker, Kubernetes\n- PostgreSQL, Kafka\n"
+    test_shortcomings = ["No Kafka Streams experience", "Missing CI/CD pipeline expertise"]
+    test_linkedin = "=== Skills.csv ===\nJava,Spring Boot,Kafka,Docker\n"
+
+    stage_test_configs = {
+        "scorecard": {
+            "system_prompt": SCORECARD_SYSTEM_PROMPT,
+            "user_prompt": test_jd,
+            "validator_fn": lambda t: bool(llm_client.extract_json(t) and llm_client.extract_json(t).get("pillars")),
+        },
+        "evaluation": {
+            "system_prompt": EVALUATION_SYSTEM_PROMPT,
+            "user_prompt": (
+                f"## Candidate Resume\n\n{test_resume}\n\n---\n\n"
+                f"## Job Scorecard\n\n```json\n{json.dumps(test_scorecard, indent=2)}\n```"
+            ),
+            "validator_fn": lambda t: bool(llm_client.extract_json(t) and "relevance" in llm_client.extract_json(t)),
+        },
+        "gap_analysis": {
+            "system_prompt": GAP_ANALYSIS_SYSTEM_PROMPT,
+            "user_prompt": (
+                "## Shortcomings to Check\n\n"
+                + "\n".join(f"- {s}" for s in test_shortcomings)
+                + "\n\n---\n\n## LinkedIn Profile Data\n\n" + test_linkedin
+            ),
+            "validator_fn": lambda t: bool(llm_client.extract_json(t)),
+        },
+    }
+
+    # --- Build the full matrix ---
+    results: list[dict] = []
+
+    for stage_name, test_cfg in stage_test_configs.items():
+        stage_params = stage_params_map.get(stage_name, llm_client.StageParams())
+        all_models = list(stage_params.models) if stage_params.models else []
+
+        # Also include all models from all providers (deduped) to test broadly
+        seen = set(all_models)
+        for p in providers:
+            for m in p.models:
+                if m not in seen:
+                    all_models.append(m)
+                    seen.add(m)
+
+        for model in all_models:
+            capable = [p for p in providers if model in p.models]
+            for provider in capable:
+                for api_key in provider.api_keys:
+                    key_label = f"...{api_key[-4:]}" if api_key else "local"
+
+                    # Build the request (always with json_mode=True, matching production)
+                    adapter = provider.adapter
+                    params = stage_params
+                    if adapter == "gemini":
+                        url, headers, body = llm_client._build_gemini_request(
+                            provider, api_key, model,
+                            test_cfg["system_prompt"], test_cfg["user_prompt"],
+                            params.temperature, params.max_tokens, True,
+                        )
+                    elif adapter == "cohere":
+                        url, headers, body = llm_client._build_cohere_request(
+                            provider, api_key, model,
+                            test_cfg["system_prompt"], test_cfg["user_prompt"],
+                            params.temperature, params.max_tokens, True,
+                        )
+                    else:
+                        url, headers, body = llm_client._build_openai_request(
+                            provider, api_key, model,
+                            test_cfg["system_prompt"], test_cfg["user_prompt"],
+                            params.temperature, params.max_tokens, True,
+                        )
+
+                    entry = {
+                        "stage": stage_name,
+                        "model": model,
+                        "provider": provider.name,
+                        "key": key_label,
+                        "http_status": None,
+                        "response_ms": None,
+                        "json_parsed": False,
+                        "validation": False,
+                        "error": None,
+                    }
+
+                    print(f"  [DEBUG] {stage_name} | {provider.name} | {model} | key={key_label} ... ", end="", flush=True)
+
+                    t0 = _time.time()
+                    try:
+                        import requests as _requests
+                        resp = _requests.post(url, json=body, headers=headers, timeout=60)
+                        entry["http_status"] = resp.status_code
+                        entry["response_ms"] = int((_time.time() - t0) * 1000)
+
+                        if resp.status_code == 200:
+                            resp_json = resp.json()
+                            text = llm_client._extract_response_text(adapter, resp_json)
+                            if text:
+                                parsed = llm_client.extract_json(text)
+                                entry["json_parsed"] = parsed is not None
+                                if entry["json_parsed"] and test_cfg["validator_fn"]:
+                                    entry["validation"] = test_cfg["validator_fn"](text)
+                            else:
+                                entry["error"] = "empty_content"
+                        elif resp.status_code == 400 and "json_validate_failed" in resp.text[:500]:
+                            entry["error"] = "json_validate_failed (strict mode rejection)"
+                        elif resp.status_code == 429:
+                            entry["error"] = "rate_limited"
+                        else:
+                            entry["error"] = resp.text[:200]
+                    except Exception as exc:
+                        entry["response_ms"] = int((_time.time() - t0) * 1000)
+                        entry["error"] = str(exc)[:200]
+
+                    # Print inline result
+                    if entry["validation"]:
+                        print(f"✅ {entry['response_ms']}ms")
+                    elif entry["json_parsed"]:
+                        print(f"⚠️  JSON ok but validation failed ({entry['response_ms']}ms)")
+                    else:
+                        print(f"❌ HTTP {entry['http_status']} — {entry.get('error', 'unknown')}")
+
+                    results.append(entry)
+
+                    # Polite delay
+                    _time.sleep(2)
+
+    # --- Print summary matrix ---
+    print(f"\n{'='*90}")
+    print(f"  DEBUG MATRIX — {len(results)} combinations tested")
+    print(f"{'='*90}")
+    print(f"  {'Stage':<14} {'Provider':<12} {'Model':<45} {'HTTP':<5} {'ms':<6} {'JSON':<5} {'Valid':<5}")
+    print(f"  {'-'*14} {'-'*12} {'-'*45} {'-'*5} {'-'*6} {'-'*5} {'-'*5}")
+
+    for r in results:
+        status_icon = "✅" if r["validation"] else ("⚠️ " if r["json_parsed"] else "❌")
+        http_str = str(r["http_status"] or "ERR")
+        ms_str = str(r["response_ms"] or "-")
+        json_str = "Y" if r["json_parsed"] else "N"
+        valid_str = "Y" if r["validation"] else "N"
+        print(f"  {r['stage']:<14} {r['provider']:<12} {r['model']:<45} {http_str:<5} {ms_str:<6} {json_str:<5} {valid_str:<5} {status_icon}")
+
+    # --- Aggregate stats ---
+    total = len(results)
+    passed = sum(1 for r in results if r["validation"])
+    json_ok = sum(1 for r in results if r["json_parsed"])
+    failed = total - passed
+    print(f"\n  Total: {total}  |  ✅ Passed: {passed}  |  ⚠️  JSON-only: {json_ok - passed}  |  ❌ Failed: {failed}")
+
+    # --- Dump failures detail ---
+    failures = [r for r in results if not r["validation"]]
+    if failures:
+        print(f"\n{'='*90}")
+        print(f"  FAILURE DETAILS")
+        print(f"{'='*90}")
+        for r in failures:
+            print(f"\n  {r['stage']} | {r['provider']} | {r['model']}")
+            print(f"    HTTP: {r['http_status']}  |  Response: {r['response_ms']}ms")
+            print(f"    JSON parsed: {r['json_parsed']}  |  Validation: {r['validation']}")
+            if r["error"]:
+                print(f"    Error: {r['error']}")
+
+    print()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="LLM Scoring Pipeline — Scorecard Generation + Resume Evaluation",
@@ -711,6 +907,8 @@ def main() -> None:
                         help="Run LinkedIn gap analysis for a specific job")
     parser.add_argument("--company-filter", type=str,
                         help="Filter to a specific company in batch mode")
+    parser.add_argument("--debug", action="store_true",
+                        help="Test all model×provider×stage combinations and print a success-rate matrix")
 
     args = parser.parse_args()
 
@@ -719,6 +917,12 @@ def main() -> None:
     print()
 
     config = config_engine.load_config("config.yaml")
+
+    if args.debug:
+        run_debug_matrix(config)
+        print("[DONE] Debug matrix complete.")
+        print()
+        return
 
     if args.gap_check:
         # LinkedIn gap analysis mode

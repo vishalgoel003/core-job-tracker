@@ -411,13 +411,32 @@ def _build_cohere_request(
 # ---------------------------------------------------------------------------
 
 def _extract_response_text(adapter: str, response_json: dict) -> str | None:
-    """Extract the generated text from a provider-specific response JSON."""
+    """Extract the generated text from a provider-specific response JSON.
+
+    Handles thinking/reasoning models:
+      - Gemini: some models (e.g., gemma-4-31b-it) return multiple parts where
+        the first part(s) are "thought" and the last part is the actual answer.
+        We iterate parts in reverse and return the first non-empty text part,
+        which is typically the final answer containing the JSON.
+      - OpenAI: reasoning models (e.g., zai-glm-4.7 on Cerebras) may put
+        output in message.reasoning when content is null (finish_reason=length).
+    """
     result = None
     if adapter == "openai":
         choices = response_json.get("choices") or []
         if choices:
             message = choices[0].get("message") or {}
             result = message.get("content")
+            # Fallback for reasoning models where content is null but
+            # reasoning contains the actual output (e.g., truncated by max_tokens)
+            if not result and message.get("reasoning"):
+                # Don't use raw reasoning as response — it's typically
+                # incomplete chain-of-thought, not the final answer.
+                # Log and return None so the cascade advances.
+                finish = choices[0].get("finish_reason", "")
+                if finish == "length":
+                    print(f"  [LLM] Response truncated (finish_reason=length) — model used all tokens on reasoning.")
+                pass
 
     elif adapter == "gemini":
         candidates = response_json.get("candidates") or []
@@ -425,7 +444,14 @@ def _extract_response_text(adapter: str, response_json: dict) -> str | None:
             content = candidates[0].get("content") or {}
             parts = content.get("parts") or []
             if parts:
-                result = parts[0].get("text")
+                # Thinking models emit multiple parts: thought parts first,
+                # then the actual answer last. Iterate in reverse to find
+                # the actual text answer (skip empty parts).
+                for part in reversed(parts):
+                    text = part.get("text", "").strip()
+                    if text:
+                        result = text
+                        break
 
     elif adapter == "cohere":
         message = response_json.get("message") or {}
@@ -604,6 +630,73 @@ def call_llm(
                     continue
 
                 if response.status_code != 200:
+                    # JSON-mode fallback: if provider rejects strict JSON mode
+                    # (e.g., Groq 400 json_validate_failed), retry WITHOUT json_mode
+                    # and rely on extract_json() to parse the free-text response.
+                    if (
+                        response.status_code == 400
+                        and json_mode
+                        and "json_validate_failed" in response.text[:500]
+                    ):
+                        print(f"  [LLM] {provider.name} strict JSON mode failed — retrying without json_mode ...")
+                        if adapter == "gemini":
+                            url2, headers2, body2 = _build_gemini_request(
+                                provider, api_key, model,
+                                system_prompt, user_prompt, temperature, max_tokens,
+                                json_mode=False,
+                            )
+                        elif adapter == "cohere":
+                            url2, headers2, body2 = _build_cohere_request(
+                                provider, api_key, model,
+                                system_prompt, user_prompt, temperature, max_tokens,
+                                json_mode=False,
+                            )
+                        else:
+                            url2, headers2, body2 = _build_openai_request(
+                                provider, api_key, model,
+                                system_prompt, user_prompt, temperature, max_tokens,
+                                json_mode=False,
+                            )
+
+                        try:
+                            retry_resp = session.post(url2, json=body2, headers=headers2, timeout=60)
+                        except requests.exceptions.RequestException as exc:
+                            print(f"  [LLM] {provider.name} retry network error: {exc}")
+                            continue
+
+                        # NOTE: Do NOT update rate-limit state here. The original
+                        # 400 response already counted against the rate limit.
+                        # Updating again would double-count and poison the tracker,
+                        # causing all subsequent models on this provider to be skipped.
+
+                        if retry_resp.status_code == 200:
+                            try:
+                                retry_json = retry_resp.json()
+                            except ValueError:
+                                print(f"  [LLM] {provider.name} retry returned non-JSON response")
+                                continue
+
+                            retry_text = _extract_response_text(adapter, retry_json)
+                            if retry_text:
+                                # Validate that the free-text response contains parseable JSON
+                                # before accepting — otherwise we'd short-circuit the cascade
+                                # with garbage text the caller can't use.
+                                parsed_check = extract_json(retry_text)
+                                if parsed_check is None:
+                                    print(f"  [LLM] {provider.name} fallback response not parseable JSON ({len(retry_text)} chars). Continuing cascade.")
+                                    continue
+
+                                # Also run the caller's validator if provided
+                                if validator_fn and not validator_fn(retry_text):
+                                    print(f"  [LLM] {provider.name} fallback response failed validation. Continuing cascade.")
+                                    continue
+
+                                print(f"  [LLM] JSON-mode fallback success from {provider.name} ({model}) — {len(retry_text)} chars")
+                                return retry_text, provider
+
+                        print(f"  [LLM] {provider.name} retry also failed (HTTP {retry_resp.status_code}). Moving on.")
+                        continue
+
                     print(f"  [LLM] {provider.name} returned HTTP {response.status_code}")
                     print(f"         Body (first 300 chars): {response.text[:300]}")
                     continue
