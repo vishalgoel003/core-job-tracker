@@ -130,7 +130,7 @@ def _post_page(
     except requests.exceptions.RequestException as exc:
         print(f"\n[NETWORK ERROR] Failed to reach {api_url}")
         print(f"  Exception: {exc}")
-        sys.exit(1)
+        raise RuntimeError(f"Network error: {exc}")
 
     if response.status_code != 200:
         print(f"\n[HTTP ERROR] Status {response.status_code} from {api_url}")
@@ -138,8 +138,8 @@ def _post_page(
         for k, v in response.headers.items():
             print(f"    {k}: {v}")
         print(f"\n  Raw response body (first 500 chars):\n  {response.text[:500]}")
-        print("\n[HALTED] Non-200 response. No automatic retry. Awaiting manual guidance.")
-        sys.exit(response.status_code)
+        print("\n[HALTED] Non-200 response. No automatic retry.")
+        raise RuntimeError(f"HTTP {response.status_code} from {api_url}")
 
     try:
         return response.json()
@@ -147,7 +147,7 @@ def _post_page(
         print(f"\n[JSON PARSE ERROR] Could not decode response from {api_url}")
         print(f"  Exception: {exc}")
         print(f"  Raw body (first 500 chars):\n  {response.text[:500]}")
-        sys.exit(1)
+        raise RuntimeError(f"JSON decode error: {exc}")
 
 
 # ---------------------------------------------------------------------------
