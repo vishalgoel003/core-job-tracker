@@ -105,12 +105,12 @@ _SORT_MAP = {
     "Company A→Z":   ("_company",              True),
 }
 
-# Display column lists (open_modal injected at position 0 at render time)
-_ACTIVE_BASE   = ["applied_bool", "relevance", "_company", "job_id", "title",
+_ACTIVE_BASE   = ["applied_bool", "skipped_bool", "relevance", "_company", "job_id", "title",
                   "first_discovered_on", "last_date"]
 _SENT_BASE     = ["applied_bool", "applied", "relevance", "_company", "job_id", "title",
                   "first_discovered_on", "last_date"]
 _ARCHIVED_BASE = ["_company", "job_id", "title", "first_discovered_on", "last_date"]
+_SKIPPED_BASE  = ["skipped_bool", "_company", "job_id", "title", "first_discovered_on", "last_date"]
 
 # ---------------------------------------------------------------------------
 # Markdown notes helpers
@@ -146,6 +146,18 @@ def _not_applied(val: str) -> bool:
 
 def _is_applied(val: str) -> bool:
     return not _not_applied(val)
+
+
+# ---------------------------------------------------------------------------
+# Skipped field helpers
+# ---------------------------------------------------------------------------
+
+def _is_skipped(val: str) -> bool:
+    return str(val).strip().lower() == "yes"
+
+
+def _not_skipped(val: str) -> bool:
+    return not _is_skipped(val)
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +198,10 @@ def load_all_jobs() -> pd.DataFrame:
     )
     combined["last_date"] = pd.to_datetime(combined["last_date"], errors="coerce")
     combined["applied_bool"] = combined["applied"].apply(_is_applied)
+    # Auto-add skipped column for CSVs that predate the feature
+    if "skipped" not in combined.columns:
+        combined["skipped"] = ""
+    combined["skipped_bool"] = combined["skipped"].apply(_is_skipped)
     return combined
 
 
@@ -250,6 +266,11 @@ _COL_CFG = {
     "applied_bool":        st.column_config.CheckboxColumn(
                                "App",
                                help="Check to mark applied (saves today's date). Uncheck to undo.",
+                               width="small",
+                           ),
+    "skipped_bool":        st.column_config.CheckboxColumn(
+                               "🚫",
+                               help="Skip this job — removes it from Active Radar.",
                                width="small",
                            ),
     "relevance":           st.column_config.NumberColumn(
@@ -625,6 +646,32 @@ def main() -> None:
             st.cache_data.clear()
             st.rerun()
 
+        st.divider()
+        if st.button("🧹 Prune Dead Jobs", width="stretch",
+                     help="Permanently delete files and CSV rows for archived/skipped unapplied jobs"):
+            with st.spinner("Pruning dead jobs..."):
+                try:
+                    env = os.environ.copy()
+                    env["PYTHONIOENCODING"] = "utf-8"
+                    result = subprocess.run(
+                        [sys.executable, "src/state_tracker.py", "--prune"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        env=env,
+                        check=True,
+                        cwd=str(_PROJECT_ROOT),
+                    )
+                    output = result.stdout.strip()
+                    st.success(f"✅ {output.splitlines()[-1] if output else 'Prune complete.'}")
+                    st.cache_data.clear()
+                    st.rerun()
+                except subprocess.CalledProcessError as exc:
+                    st.error(
+                        f"❌ Prune failed (code {exc.returncode}):\n"
+                        f"```\n{exc.stderr[-400:] if exc.stderr else 'No stderr output.'}\n```"
+                    )
+
     # ── Base filter ─────────────────────────────────────────────────────────
     base = df[df["_company"].isin(company_filter)].copy()
     if search_text:
@@ -634,9 +681,13 @@ def main() -> None:
         )
         base = base[mask]
 
-    # Three-way split
+    # Four-way split
     active_df   = _apply_sort(
-        base[(base["visible"].str.lower() == "yes") & base["applied"].apply(_not_applied)],
+        base[
+            (base["visible"].str.lower() == "yes")
+            & base["applied"].apply(_not_applied)
+            & base["skipped_bool"].eq(False)
+        ],
         sort1, sort2,
     )
     sent_df     = _apply_sort(
@@ -645,6 +696,9 @@ def main() -> None:
     )
     archived_df = base[
         (base["visible"].str.lower() == "no") & base["applied"].apply(_not_applied)
+    ].reset_index(drop=True)
+    skipped_df  = base[
+        base["skipped_bool"].eq(True) & base["applied"].apply(_not_applied)
     ].reset_index(drop=True)
 
     # ── Header & Funnel Metrics ──────────────────────────────────────────────
@@ -672,10 +726,11 @@ def main() -> None:
     m4.metric("🏢 Companies", len(company_filter))
 
     # ── Tabs ────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         f"🎯 Active Radar  ({len(active_df)})",
         f"📤 Sent Applications  ({len(sent_df)})",
         f"📦 Archived  ({len(archived_df)})",
+        f"🚫 Skipped  ({len(skipped_df)})",
     ])
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -716,7 +771,7 @@ def main() -> None:
             if modal_row is not None:
                 show_job_modal(modal_row["job_id"], modal_row["title"], modal_row["_company"], modal_row["_md_dir"])
             else:
-                # ── Write-back: applied_bool + relevance ──────────────────
+                # ── Write-back: applied_bool + skipped_bool + relevance ────
                 changes: list[dict] = []
                 for idx in range(min(len(edited), len(t1_source))):
                     orig     = t1_source.iloc[idx]
@@ -733,6 +788,14 @@ def main() -> None:
                             "csv_path": full_row["_csv_path"],
                             "field":    "applied",
                             "value":    new_val,
+                        })
+
+                    if bool(edit["skipped_bool"]) != bool(orig["skipped_bool"]):
+                        changes.append({
+                            "job_id":   full_row["job_id"],
+                            "csv_path": full_row["_csv_path"],
+                            "field":    "skipped",
+                            "value":    "yes" if edit["skipped_bool"] else "",
                         })
 
                     if int(edit["relevance"]) != int(orig["relevance"]):
@@ -844,6 +907,65 @@ def main() -> None:
             # 3. TRIGGER MODAL OR PROCESS SAVES
             if modal_row is not None:
                 show_job_modal(modal_row["job_id"], modal_row["title"], modal_row["_company"], modal_row["_md_dir"])
+
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # TAB 4 — Skipped Jobs (un-skip by unchecking 🚫)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with tab4:
+        if skipped_df.empty:
+            st.info(
+                "No skipped jobs.  \n"
+                "Tick **🚫** in the Active Radar tab to skip a job."
+            )
+        else:
+            st.caption("Uncheck **🚫** to restore a job to Active Radar.")
+            t4_ver    = st.session_state.get("t4_ver", 0)
+            t4_key    = f"tab4_editor_{t4_ver}"
+            t4_source = skipped_df[_SKIPPED_BASE].copy().reset_index(drop=True)
+            t4_source["open_modal"] = False
+
+            # 1. INTERCEPT STATE BEFORE RENDERING
+            modal_row = None
+            if t4_key in st.session_state:
+                edits = st.session_state[t4_key].get("edited_rows", {})
+                for idx_str, chgs in edits.items():
+                    if chgs.get("open_modal") is True:
+                        modal_row = skipped_df.iloc[int(idx_str)]
+                        t4_ver += 1
+                        st.session_state["t4_ver"] = t4_ver
+                        t4_key = f"tab4_editor_{t4_ver}"
+                        break
+
+            # 2. RENDER EDITOR
+            edited_skip = st.data_editor(
+                t4_source,
+                column_config={k: v for k, v in _COL_CFG.items() if k in t4_source.columns},
+                width="stretch",
+                hide_index=True,
+                num_rows="fixed",
+                key=t4_key,
+            )
+
+            # 3. TRIGGER MODAL OR PROCESS UN-SKIP
+            if modal_row is not None:
+                show_job_modal(modal_row["job_id"], modal_row["title"], modal_row["_company"], modal_row["_md_dir"])
+            else:
+                changes: list[dict] = []
+                for idx in range(min(len(edited_skip), len(t4_source))):
+                    orig     = t4_source.iloc[idx]
+                    edit     = edited_skip.iloc[idx]
+                    full_row = skipped_df.iloc[idx]
+                    # Un-skip when skipped_bool flipped True → False
+                    if not bool(edit["skipped_bool"]) and bool(orig["skipped_bool"]):
+                        changes.append({
+                            "job_id":   full_row["job_id"],
+                            "csv_path": full_row["_csv_path"],
+                            "field":    "skipped",
+                            "value":    "",
+                        })
+                if changes:
+                    _write_back(changes)
 
 
 # ---------------------------------------------------------------------------

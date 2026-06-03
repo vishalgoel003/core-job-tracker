@@ -60,6 +60,7 @@ CSV_COLUMNS: list[str] = [
     "visible",
     "relevance",
     "applied",
+    "skipped",
 ]
 
 
@@ -77,10 +78,15 @@ def load_ledger(csv_path: Path) -> dict[str, dict]:
 
     ledger: dict[str, dict] = {}
     with csv_path.open(newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
+        reader = csv.DictReader(fh)
+        for row in reader:
             job_id = row.get("job_id", "").strip()
             if job_id:
-                ledger[job_id] = dict(row)
+                d = dict(row)
+                # Auto-migrate legacy 7-column CSVs that predate the 'skipped' column
+                if "skipped" not in d:
+                    d["skipped"] = ""
+                ledger[job_id] = d
     return ledger
 
 
@@ -124,6 +130,7 @@ def reconcile(
                 "relevance":           job.get("relevance", "TBD"),
                 "applied":             job.get("applied", "no"),
                 "last_date":           "",    # blank until HR deadline fetched via Late Write
+                "skipped":             "",
                 # Enrichment fields — stripped from CSV by extrasaction='ignore'
                 "_company":           job.get("_company", ""),
                 "_url":               job.get("_url", ""),
@@ -401,6 +408,76 @@ def _scrape_one(company_cfg: dict, paths: dict) -> dict[str, Any]:
     return process_company(company_cfg, fresh_jobs, paths)
 
 
+
+# ---------------------------------------------------------------------------
+# Function 6 — Prune dead jobs (scorched-earth cleanup)
+# ---------------------------------------------------------------------------
+
+def prune_dead_jobs(config: dict, all_paths: list[dict]) -> dict[str, int]:
+    """
+    Permanently delete all artifacts for jobs that are no longer visible
+    and have never been applied to. This includes skipped jobs.
+
+    Criteria: visible == "no" AND applied == ""
+
+    For each matching job:
+      1. Delete job_<id>.md
+      2. Delete job_<id>.scorecard.json
+      3. Delete job_<id>.shortcomings.json
+      4. Remove the row from master_jobs.csv
+
+    Jobs with visible=="no" but applied != "" are retained (pending responses).
+    """
+    total_pruned = 0
+    path_map = {p["name"]: p for p in all_paths}
+
+    for company_cfg in (config.get("companies") or []):
+        name = company_cfg.get("name", "")
+        if name not in path_map:
+            continue
+
+        paths       = path_map[name]
+        csv_path    = Path(paths["root_dir"]) / "master_jobs.csv"
+        jd_dir      = Path(paths["job_details_dir"])
+        sc_dir      = Path(paths["scorecards_dir"])
+        sh_dir      = Path(paths["shortcomings_dir"])
+
+        if not csv_path.exists():
+            continue
+
+        ledger    = load_ledger(csv_path)
+        to_prune  = [
+            job_id for job_id, row in ledger.items()
+            if row.get("visible", "") == "no"
+            and row.get("applied", "").strip() == ""
+        ]
+
+        if not to_prune:
+            continue
+
+        pruned_count = 0
+        for job_id in to_prune:
+            safe_id = config_engine.sanitize_filename(job_id)
+
+            for f in [
+                jd_dir / f"job_{safe_id}.md",
+                sc_dir / f"job_{safe_id}.scorecard.json",
+                sh_dir / f"job_{safe_id}.shortcomings.json",
+            ]:
+                if f.exists():
+                    f.unlink()
+
+            del ledger[job_id]
+            pruned_count += 1
+
+        # Rewrite the CSV without the pruned rows
+        write_ledger(ledger, csv_path)
+        print(f"  [{name}] Pruned {pruned_count} dead job(s) from disk and ledger.")
+        total_pruned += pruned_count
+
+    return {"pruned": total_pruned}
+
+
 # ---------------------------------------------------------------------------
 # Standalone verification entrypoint  [EXEC-4.3]
 # ---------------------------------------------------------------------------
@@ -413,6 +490,19 @@ def main() -> None:
     config    = config_engine.load_config("config.yaml")
     all_paths = config_engine.resolve_output_paths(config)
     path_map  = {p["name"]: p for p in all_paths}
+
+    # ── --prune mode: scorched-earth cleanup of dead unapplied jobs ──────────
+    if "--prune" in sys.argv:
+        print("[PRUNE] Scanning for dead jobs (visible=no, applied='') ...")
+        result = prune_dead_jobs(config, all_paths)
+        total  = result["pruned"]
+        print()
+        if total:
+            print(f"[DONE] Pruned {total} dead job(s) from disk and ledger(s).")
+        else:
+            print("[DONE] Nothing to prune — ledgers are clean.")
+        print()
+        sys.exit(0)
 
     companies = config.get("companies") or []
     if not companies:

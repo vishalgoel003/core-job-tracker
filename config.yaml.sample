@@ -189,64 +189,99 @@ companies:
   # ── Priority 1: Market Infrastructure ────────────────────────────────────
   # - name: "LSEG"
   #   ats_type: "workday"
+  #   # Browser URL (edit filters here then re-copy facet IDs):
+  #   # https://lseg.wd3.myworkdayjobs.com/en-US/Careers/jobs?q=java&CF_Lookup_Business_Unit_Level_02__Job_Posting_Anchor__Extended=9c1f71183c10016d116d72382401ff75&locationCountry=c4f78be1a8f14da0ab49ce1162348a5e
   #   api_url: "https://lseg.wd3.myworkdayjobs.com/wday/cxs/lseg/Careers/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: "java"
   #     limit: 20
   #     offset: 0
-  #     appliedFacets: {}
+  #     appliedFacets:
+  #       locationCountry:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
+  #       CF_Lookup_Business_Unit_Level_02__Job_Posting_Anchor__Extended:
+  #         - "9c1f71183c10016d116d72382401ff75"   # Technology
 
   # - name: "Broadridge"
   #   ats_type: "workday"
+  #   # Browser URL:
+  #   # https://broadridge.wd5.myworkdayjobs.com/en-US/Careers/jobs?Location_Country=c4f78be1a8f14da0ab49ce1162348a5e&workerSubType=dfa6c462630f1037ce356ae968171957&jobFamilyGroup=dfa6c462630f103827c7aa548e375605&jobFamilyGroup=00c4df2756e71000766b4c08cd750000&jobFamilyGroup=00c4df2756e7100076736f51c5de0000
   #   api_url: "https://broadridge.wd5.myworkdayjobs.com/wday/cxs/broadridge/Careers/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: ""
   #     limit: 20
   #     offset: 0
-  #     appliedFacets: {}
+  #     appliedFacets:
+  #       Location_Country:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
+  #       workerSubType:
+  #         - "dfa6c462630f1037ce356ae968171957"   # Regular
+  #       jobFamilyGroup:
+  #         - "dfa6c462630f103827c7aa548e375605"   # Technology
+  #         - "00c4df2756e71000766b4c08cd750000"   # Engineering
+  #         - "00c4df2756e7100076736f51c5de0000"   # Information Technology
 
   # - name: "CMEGroup"
   #   ats_type: "workday"
+  #   # Browser URL:
+  #   # https://cmegroup.wd1.myworkdayjobs.com/en-US/cme_careers/jobs?workerSubType=7a3301e6ea5710f63d5e031a5929251a&jobFamilyGroup=5b28d774a79e0158b629c1b509aaa94e&timeType=fd0286c9aab910f1cf010b8f850728b4&locations=7a3301e6ea5710f69c0ee6a821946acb
   #   api_url: "https://cmegroup.wd1.myworkdayjobs.com/wday/cxs/cmegroup/cme_careers/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: ""
   #     limit: 20
   #     offset: 0
-  #     appliedFacets: {}
+  #     appliedFacets:
+  #       workerSubType:
+  #         - "7a3301e6ea5710f63d5e031a5929251a"   # Regular
+  #       jobFamilyGroup:
+  #         - "5b28d774a79e0158b629c1b509aaa94e"   # Technology
+  #       timeType:
+  #         - "fd0286c9aab910f1cf010b8f850728b4"   # Full-Time
+  #       locations:
+  #         - "7a3301e6ea5710f69c0ee6a821946acb"   # India
 
   # - name: "StateStreet"
   #   ats_type: "workday"
+  #   # Browser URL:
+  #   # https://statestreet.wd1.myworkdayjobs.com/en-US/Global/jobs?Location_Country=c4f78be1a8f14da0ab49ce1162348a5e&jobFamilyGroup=56250981e7cb01b9a0c0c6893041490c
   #   api_url: "https://statestreet.wd1.myworkdayjobs.com/wday/cxs/statestreet/Global/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: ""
   #     limit: 20
   #     offset: 0
-  #     appliedFacets: {}
-
-  # - name: "Murex"
-  #   ats_type: "workday"
-  #   api_url: "https://murex.wd3.myworkdayjobs.com/wday/cxs/murex/MurexCareerPage1/jobs"
-  #   payload:
-  #     searchText: "Java"
-  #     limit: 20
-  #     offset: 0
-  #     appliedFacets: {}
+  #     appliedFacets:
+  #       Location_Country:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
+  #       jobFamilyGroup:
+  #         - "56250981e7cb01b9a0c0c6893041490c"   # Technology
 
   # - name: "Nasdaq"
   #   ats_type: "workday"
-  #   api_url: "https://nasdaq.wd1.myworkdayjobs.com/wday/cxs/nasdaq/US_External_Career_Site/jobs"
+  #   # Browser URL:
+  #   # https://nasdaq.wd1.myworkdayjobs.com/Global_External_Site?jobFamily=88704065592e01f356584f2a0c39a330&jobFamily=4f6ba20012c2016a658d454eae00dc6f&jobFamily=88704065592e01045e30102a0c397530&Location_Country=c4f78be1a8f14da0ab49ce1162348a5e
+  #   api_url: "https://nasdaq.wd1.myworkdayjobs.com/wday/cxs/nasdaq/Global_External_Site/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: ""
   #     limit: 20
   #     offset: 0
-  #     appliedFacets: {}
+  #     appliedFacets:
+  #       Location_Country:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
+  #       jobFamily:
+  #         - "88704065592e01f356584f2a0c39a330"
+  #         - "4f6ba20012c2016a658d454eae00dc6f"
+  #         - "88704065592e01045e30102a0c397530"
+
 
   # ── Priority 2: HFT & Quant ─────────────────────────────────────────────
+  # NOTE: MLP (Millennium) and Optiver are shelved pending endpoint investigation.
+  #   - MLP:    https://mlp.wd5.myworkdayjobs.com returns 0 jobs (tenant may have moved)
+  #   - Optiver: https://optiver.wd3.myworkdayjobs.com returns HTTP 422 (non-standard tenant)
   # - name: "Millennium"
   #   ats_type: "workday"
   #   api_url: "https://mlp.wd5.myworkdayjobs.com/wday/cxs/mlp/mlpcareers/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: ""
   #     limit: 20
   #     offset: 0
   #     appliedFacets: {}
@@ -255,10 +290,11 @@ companies:
   #   ats_type: "workday"
   #   api_url: "https://optiver.wd3.myworkdayjobs.com/wday/cxs/optiver/Optiver_Careers/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: ""
   #     limit: 20
   #     offset: 0
   #     appliedFacets: {}
+
 
   # ── Priority 3: Tier-1 Banks ─────────────────────────────────────────────
   - name: "Barclays"
@@ -294,21 +330,51 @@ companies:
 
   # - name: "Fidelity"
   #   ats_type: "workday"
-  #   api_url: "https://fil.wd3.myworkdayjobs.com/wday/cxs/fil/001/jobs"
+  #   # Browser URL:
+  #   # https://wd1.myworkdaysite.com/en-US/recruiting/fmr/FidelityCareers?locationCountry=c4f78be1a8f14da0ab49ce1162348a5e&jobFamilyGroup=e39fd413f80c0104eb5775256a997b12
+  #   api_url: "https://wd1.myworkdaysite.com/wday/cxs/fmr/FidelityCareers/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: ""
   #     limit: 20
   #     offset: 0
-  #     appliedFacets: {}
+  #     appliedFacets:
+  #       locationCountry:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
+  #       jobFamilyGroup:
+  #         - "e39fd413f80c0104eb5775256a997b12"   # Technology
+
+  # - name: "Avnet"
+  #   ats_type: "workday"
+  #   # Browser URL:
+  #   # https://wd1.myworkdaysite.com/en-US/recruiting/avnet/External?Country=c4f78be1a8f14da0ab49ce1162348a5e&Job_Area=43f444480d5948599bec5c1601515c4f
+  #   api_url: "https://wd1.myworkdaysite.com/wday/cxs/avnet/External/jobs"
+  #   payload:
+  #     searchText: ""
+  #     limit: 20
+  #     offset: 0
+  #     appliedFacets:
+  #       Country:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
+  #       Job_Area:
+  #         - "43f444480d5948599bec5c1601515c4f"   # Technology
 
   # - name: "BlackRock"
   #   ats_type: "workday"
+  #   # Browser URL:
+  #   # https://blackrock.wd1.myworkdayjobs.com/BlackRock_Professional?locations=131d7f8fcf9f014033ba3257f75037cd&locations=131d7f8fcf9f01c37cbb7257f7507dcd&locations=131d7f8fcf9f0108d331d757f750f5cd&jobFamilyGroup=7c29ce3598461001f7505cfee2240000
   #   api_url: "https://blackrock.wd1.myworkdayjobs.com/wday/cxs/blackrock/BlackRock_Professional/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: ""
   #     limit: 20
   #     offset: 0
-  #     appliedFacets: {}
+  #     appliedFacets:
+  #       locations:
+  #         - "131d7f8fcf9f014033ba3257f75037cd"   # Gurgaon, India
+  #         - "131d7f8fcf9f01c37cbb7257f7507dcd"   # Mumbai, India
+  #         - "131d7f8fcf9f0108d331d757f750f5cd"   # India (general)
+  #       jobFamilyGroup:
+  #         - "7c29ce3598461001f7505cfee2240000"   # Technology
+
 
   # - name: "CapitalGroup"
   #   ats_type: "workday"
@@ -344,30 +410,37 @@ companies:
   # ── Priority 4: Global FinTech ───────────────────────────────────────────
   # - name: "PayPal"
   #   ats_type: "workday"
+  #   # Browser URL:
+  #   # https://paypal.wd1.myworkdayjobs.com/jobs?locations=bcdc9518960a01a46ac477aa2d240c99&locations=bcdc9518960a0115db738aaa2d241899&jobFamilyGroup=b00c2f6141401001c5f81018e4210000
   #   api_url: "https://paypal.wd1.myworkdayjobs.com/wday/cxs/paypal/jobs/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: ""
   #     limit: 20
   #     offset: 0
-  #     appliedFacets: {}
-
-  # - name: "Mastercard"
-  #   ats_type: "workday"
-  #   api_url: "https://mastercard.wd1.myworkdayjobs.com/wday/cxs/mastercard/CorporateCareers/jobs"
-  #   payload:
-  #     searchText: "Java"
-  #     limit: 20
-  #     offset: 0
-  #     appliedFacets: {}
+  #     appliedFacets:
+  #       locations:
+  #         - "bcdc9518960a01a46ac477aa2d240c99"   # Chennai, India
+  #         - "bcdc9518960a0115db738aaa2d241899"   # Bangalore, India
+  #       jobFamilyGroup:
+  #         - "b00c2f6141401001c5f81018e4210000"   # Software Engineering
 
   # - name: "Visa"
   #   ats_type: "workday"
-  #   api_url: "https://visa.wd1.myworkdayjobs.com/wday/cxs/visa/Visa_Careers/jobs"
+  #   # Browser URL:
+  #   # https://visa.wd5.myworkdayjobs.com/Visa?locationCountry=c4f78be1a8f14da0ab49ce1162348a5e&jobFamilyGroup=e8c806498390105c6260a580252a0363&jobFamily=2745bc1368021016a991f65e710a3b1e
+  #   api_url: "https://visa.wd5.myworkdayjobs.com/wday/cxs/visa/Visa/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: ""
   #     limit: 20
   #     offset: 0
-  #     appliedFacets: {}
+  #     appliedFacets:
+  #       locationCountry:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
+  #       jobFamilyGroup:
+  #         - "e8c806498390105c6260a580252a0363"   # Technology
+  #       jobFamily:
+  #         - "2745bc1368021016a991f65e710a3b1e"   # Software Engineering
+
 
   # ── Non-Workday ATS (not yet supported — roadmap items) ──────────────────
   # - name: "Arcesium"
