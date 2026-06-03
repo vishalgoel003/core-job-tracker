@@ -297,6 +297,37 @@ companies:
 
 
   # ── Priority 3: Tier-1 Banks ─────────────────────────────────────────────
+
+  # - name: "MorganStanley"
+  #   ats_type: "workday"
+  #   # Browser URL:
+  #   # https://ms.wd5.myworkdayjobs.com/en-US/External/jobs?Location_Country=c4f78be1a8f14da0ab49ce1162348a5e&jobFamilyGroup=e38d1cf2ff5a10014d19aa66ad230000
+  #   api_url: "https://ms.wd5.myworkdayjobs.com/wday/cxs/ms/External/jobs"
+  #   payload:
+  #     searchText: ""
+  #     limit: 20
+  #     offset: 0
+  #     appliedFacets:
+  #       Location_Country:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
+  #       jobFamilyGroup:
+  #         - "e38d1cf2ff5a10014d19aa66ad230000"   # Technology
+
+  # - name: "NatWestGroup"
+  #   ats_type: "workday"
+  #   # Browser URL:
+  #   # https://rbs.wd3.myworkdayjobs.com/en-US/RBS/jobs?locationCountry=c4f78be1a8f14da0ab49ce1162348a5e&jobFamilyGroup=fd2c157204cd017f69bbe493c30c681d
+  #   api_url: "https://rbs.wd3.myworkdayjobs.com/wday/cxs/rbs/RBS/jobs"
+  #   payload:
+  #     searchText: ""
+  #     limit: 20
+  #     offset: 0
+  #     appliedFacets:
+  #       locationCountry:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
+  #       jobFamilyGroup:
+  #         - "fd2c157204cd017f69bbe493c30c681d"   # Technology
+
   - name: "Barclays"
     ats_type: "workday"
     api_url: "https://barclays.wd3.myworkdayjobs.com/wday/cxs/barclays/External_Career_Site_Barclays/jobs"

@@ -146,6 +146,9 @@ The scraper fetches all live jobs, reconciles them against the existing ledger, 
 ```bash
 # From the project root, with venv activated:
 python src/state_tracker.py
+
+# To permanently prune dead jobs (visible=no & never applied to) from disk/ledgers:
+python src/state_tracker.py --prune
 ```
 
 **Expected output:**
@@ -194,11 +197,14 @@ Open **http://localhost:8501** in your browser.
 
 | Tab | Contents | Editable |
 |---|---|---|
-| **🎯 Active Radar** | All visible jobs not yet applied to | ✅ Applied checkbox (saves today's date) · Score (0–100) |
+| **🎯 Active Radar** | All visible jobs not yet applied to | ✅ App (saves date) · 🚫 Skip (hides job) |
 | **📤 Sent Applications** | All jobs with an application date | Read-only · Click row to open details |
 | **📦 Archived** | Delisted jobs (removed from live board) | Read-only · Click row to view cached JD |
+| **🚫 Skipped** | Live jobs marked as unsuitable | Uncheck 🚫 to restore to Active Radar |
 
 **Sidebar controls:** Company filter, keyword search, sort priority (Deadline ↑ / Relevance ↓ / Posted Date ↓), deadline alert window.
+- **🚀 Run Scraper:** Fetches latest jobs via backend subprocess.
+- **🧹 Prune Dead Jobs:** Permanently deletes files and CSV rows for unapplied jobs in the Archived/Skipped state.
 
 **Job Details modal (click any row or use the selector):**
 - `📄 Job Description` — Full rendered Markdown from the `.md` file
@@ -230,7 +236,8 @@ python src/state_tracker.py
 | `last_date` | ISO date | Application deadline (from `endDate`); blank if open-ended |
 | `visible` | `yes` / `no` | Whether the job is currently live on the career site |
 | `relevance` | integer 0–100 | Manual or LLM-assigned match score |
-| `applied` | ISO date / `""` | Date you submitted an application, or blank |
+| `applied` | ISO date / `""` | Date you submitted an application, or blank (`"no"` in legacy files) |
+| `skipped` | `"yes"` / `""` | Whether you marked this job as unsuitable |
 
 ---
 

@@ -449,7 +449,7 @@ def prune_dead_jobs(config: dict, all_paths: list[dict]) -> dict[str, int]:
         to_prune  = [
             job_id for job_id, row in ledger.items()
             if row.get("visible", "") == "no"
-            and row.get("applied", "").strip() == ""
+            and row.get("applied", "").strip().lower() in ("", "no")
         ]
 
         if not to_prune:
