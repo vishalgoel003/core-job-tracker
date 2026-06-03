@@ -257,7 +257,7 @@ python src/state_tracker.py
 - [x] Task 5: Restructured backend into `src/` package
 - [x] Task 6: LLM Scoring Pipeline (Scorecard + Resume Eval + Gap Analysis)
 - [x] Task 7: Parallel multi-company scraping
-- [ ] Task 8: LLM `--debug` matrix mode — force-test all models × providers × stages to generate a success-rate matrix. Implement JSON-mode fallback extractor to handle strict-mode 400 errors from providers like Groq.
+- [x] Task 8: LLM `--debug` matrix mode — force-test all models × providers × stages to generate a success-rate matrix. Implement JSON-mode fallback extractor to handle strict-mode 400 errors from providers like Groq.
 - [ ] Task 9: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
 - [ ] Task 10: Automated daily scraper scheduler
 - [ ] Task 11: Fully automated async scoring pipeline

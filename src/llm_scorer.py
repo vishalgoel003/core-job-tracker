@@ -184,7 +184,8 @@ Rules:
 1. Only list a gap as "coverable" if there is CONCRETE evidence in the LinkedIn data.
 2. Quote specific entries, project names, skill names, or position descriptions as evidence.
 3. If a gap is partially coverable, include it in "coverable" with honest evidence.
-4. Return ONLY valid JSON. No explanations, no markdown fences, no preamble."""
+4. Return ONLY valid JSON. No explanations, no markdown fences, no preamble.
+5. IMPORTANT: Output the JSON object immediately. Do not generate any chain-of-thought or reasoning."""
 
 
 # ---------------------------------------------------------------------------
@@ -827,8 +828,17 @@ def run_debug_matrix(config: dict) -> None:
                                 entry["json_parsed"] = parsed is not None
                                 if entry["json_parsed"] and test_cfg["validator_fn"]:
                                     entry["validation"] = test_cfg["validator_fn"](text)
+                                if not entry["json_parsed"]:
+                                    entry["error"] = f"JSON parse failed. Raw: {text[:500]}"
                             else:
-                                entry["error"] = "empty_content"
+                                finish_reason = None
+                                if adapter == "openai" and resp_json.get("choices"):
+                                    finish_reason = resp_json["choices"][0].get("finish_reason")
+                                
+                                if finish_reason == "length":
+                                    entry["error"] = "truncated (finish_reason=length)"
+                                else:
+                                    entry["error"] = "empty_content"
                         elif resp.status_code == 400 and "json_validate_failed" in resp.text[:500]:
                             entry["error"] = "json_validate_failed (strict mode rejection)"
                         elif resp.status_code == 429:
