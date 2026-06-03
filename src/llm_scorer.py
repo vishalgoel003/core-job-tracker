@@ -293,6 +293,16 @@ def generate_scorecard(
     """
     params = stage_params or llm_client.StageParams(temperature=0.15, max_tokens=1500)
 
+    def scorecard_validator(text: str) -> bool:
+        scorecard = llm_client.extract_json(text)
+        if not scorecard or not isinstance(scorecard, dict):
+            return False
+        if "pillars" not in scorecard:
+            return False
+        if not scorecard["pillars"]:
+            return False
+        return True
+
     raw_text, used_provider = llm_client.call_llm(
         providers=providers,
         system_prompt=SCORECARD_SYSTEM_PROMPT,
@@ -300,6 +310,7 @@ def generate_scorecard(
         stage="scorecard",
         stage_params=params,
         json_mode=True,
+        validator_fn=scorecard_validator,
     )
 
     if not raw_text:

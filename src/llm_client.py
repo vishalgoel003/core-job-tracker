@@ -2,7 +2,7 @@
 llm_client.py — LLM API Client with Model-First Cascade & Per-Key Rate-Limit Awareness
 ----------------------------------------------------------------------------------------
 Thin HTTP wrapper supporting cloud free-tier APIs (Groq, Gemini, Cerebras,
-Cohere, OpenRouter) and local endpoints (Ollama, LM Studio) via a unified
+OpenRouter) and local endpoints (Ollama, LM Studio) via a unified
 model-first cascade failover mechanism.
 
 Key design decisions:
@@ -14,7 +14,7 @@ Key design decisions:
     rate-limit state. One exhausted key does not block sibling keys.
   - Round-robin key exhaustion: all keys for all capable providers are tried
     before the cascade advances to the next model.
-  - Auto-detect adapter type from base_url (openai/gemini/cohere).
+  - Auto-detect adapter type from base_url (openai/gemini). Cohere adapter retained but deprecated.
   - Zero SDK dependencies — pure requests [TECH-1.2], [TECH-1.5].
 
 AGENT.md compliance:
@@ -32,7 +32,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -397,8 +397,11 @@ def _build_cohere_request(
         "max_tokens": max_tokens,
     }
 
-    if json_mode:
-        body["response_format"] = {"type": "json_object"}
+    # Cohere's command-a models have unstable support for response_format: {"type": "json_object"}
+    # They return 500 errors or empty content when it is passed.
+    # We rely on the system prompt to enforce JSON output.
+    # if json_mode:
+    #     body["response_format"] = {"type": "json_object"}
 
     return url, headers, body
 
@@ -409,12 +412,12 @@ def _build_cohere_request(
 
 def _extract_response_text(adapter: str, response_json: dict) -> str | None:
     """Extract the generated text from a provider-specific response JSON."""
+    result = None
     if adapter == "openai":
         choices = response_json.get("choices") or []
         if choices:
             message = choices[0].get("message") or {}
-            return message.get("content")
-        return None
+            result = message.get("content")
 
     elif adapter == "gemini":
         candidates = response_json.get("candidates") or []
@@ -422,17 +425,22 @@ def _extract_response_text(adapter: str, response_json: dict) -> str | None:
             content = candidates[0].get("content") or {}
             parts = content.get("parts") or []
             if parts:
-                return parts[0].get("text")
-        return None
+                result = parts[0].get("text")
 
     elif adapter == "cohere":
         message = response_json.get("message") or {}
         content = message.get("content") or []
-        if content:
-            return content[0].get("text")
-        return None
+        for block in content:
+            if block.get("type") == "text":
+                result = block.get("text")
+                break
 
-    return None
+    if not result:
+        print(f"  [DEBUG-EXTRACT] Failed to extract text for {adapter}. Raw JSON:")
+        import json
+        print(f"  {json.dumps(response_json)[:500]}")
+        
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +499,7 @@ def call_llm(
     stage: str = "default",
     stage_params: StageParams | None = None,
     json_mode: bool = True,
+    validator_fn: Callable[[str], bool] | None = None,
 ) -> tuple[str | None, ProviderConfig | None]:
     """
     Try LLM providers in model-first cascade order.
@@ -606,12 +615,17 @@ def call_llm(
                     continue
 
                 text = _extract_response_text(adapter, response_json)
-                if text:
-                    print(f"  [LLM] Success from {provider.name} ({model}) — {len(text)} chars")
-                    return text, provider
-                else:
+                if not text:
                     print(f"  [LLM] {provider.name} returned empty content. Trying next.")
                     continue
+
+                if validator_fn:
+                    if not validator_fn(text):
+                        print(f"  [LLM] {provider.name} response failed validation (lazy or invalid). Trying next.")
+                        continue
+
+                print(f"  [LLM] Success from {provider.name} ({model}) — {len(text)} chars")
+                return text, provider
 
     print("  [LLM] All models × providers × keys exhausted. No response obtained.")
     return None, None

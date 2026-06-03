@@ -33,7 +33,7 @@ Each pipeline stage defines an ordered list of preferred models in `config.yaml`
 
 **Shortcomings** — Specific, actionable gaps (not vague observations) are saved to disk and displayed in the UI. Old shortcomings never contaminate new LLM calls.
 
-**Model-First Cascade** — Stages specify models in preference order (e.g., `llama-3.3-70b-versatile` → `gemini-2.0-flash`). For each model, the client finds all providers capable of serving it and round-robins through **all API keys** (family accounts) before advancing to the next model. `rpm_limit` is tracked **per key**, not per provider. Supports cloud APIs and local endpoints (Ollama, LM Studio via Tailscale).
+**Model-First Cascade** — Stages specify models in preference order (e.g., `openai/gpt-oss-120b` → `gemini-3.5-flash`). For each model, the client finds all providers capable of serving it and round-robins through **all API keys** (family accounts) before advancing to the next model. `rpm_limit` is tracked **per key**, not per provider. The same model available on multiple providers (e.g., `gpt-oss-120b` on Groq, Cerebras, OpenRouter) should be listed with each provider's model ID for automatic cross-provider failover. Supports cloud APIs and local endpoints (Ollama, LM Studio via Tailscale).
 
 ---
 
@@ -257,9 +257,10 @@ python src/state_tracker.py
 - [x] Task 5: Restructured backend into `src/` package
 - [x] Task 6: LLM Scoring Pipeline (Scorecard + Resume Eval + Gap Analysis)
 - [x] Task 7: Parallel multi-company scraping
-- [ ] Task 8: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
-- [ ] Task 9: Automated daily scraper scheduler
-- [ ] Task 10: Fully automated async scoring pipeline
+- [ ] Task 8: LLM `--debug` matrix mode — force-test all models × providers × stages to generate a success-rate matrix. Implement JSON-mode fallback extractor to handle strict-mode 400 errors from providers like Groq.
+- [ ] Task 9: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
+- [ ] Task 10: Automated daily scraper scheduler
+- [ ] Task 11: Fully automated async scoring pipeline
 
 ---
 

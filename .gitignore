@@ -5,3 +5,4 @@ targets/
 config.yaml
 user_details/
 *.lock
+free_provider_limits/

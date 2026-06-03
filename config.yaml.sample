@@ -53,15 +53,24 @@ llm:
     # Add multiple api_keys to pool free-tier accounts ("family accounts").
     # Each key has its own rpm_limit quota — exhausting one key tries the next.
 
+    # - name: "cohere"                   # DEPRECATED — unstable JSON output
+    #   api_keys:
+    #     - ""                           # https://dashboard.cohere.com/api-keys
+    #   base_url: "https://api.cohere.com/v2/chat"
+    #   models:
+    #     - "command-a-plus-05-2026"
+    #     - "command-a-03-2025"
+    #   rpm_limit: 20
+
     - name: "groq"
       api_keys:                        # https://console.groq.com/keys
         - "gsk_xxxxxxxxxxxxxxxxxxxx"   # Account 1
         # - "gsk_yyyyyyyyyyyyyyyyyy"   # Account 2 (uncomment to add)
       base_url: "https://api.groq.com/openai/v1/chat/completions"
       models:                          # Update as Groq adds new models
-        - "llama-3.3-70b-versatile"    # Best quality; use for scorecard/eval
-        - "llama-3.1-8b-instant"       # Faster/cheaper; use for gap analysis
-        - "gemma2-9b-it"               # Good alternative for lighter tasks
+        - "openai/gpt-oss-120b"        # 120B dense — strongest quality (30 RPM, 1K RPD)
+        - "meta-llama/llama-4-scout-17b-16e-instruct"  # Llama 4 MoE (30 RPM, 1K RPD)
+        - "qwen/qwen3-32b"             # 32B thinking model (60 RPM, 1K RPD)
       rpm_limit: 30                    # Free-tier: 30 req/min per key
 
     - name: "gemini"
@@ -70,9 +79,9 @@ llm:
         # - "AIzaSyYYYYYYYYYYYYYYYYYYYY"
       base_url: "https://generativelanguage.googleapis.com/v1beta/models"
       models:                          # Update as Google releases new models
-        - "gemini-2.0-flash"           # Fast and capable; good all-rounder
-        - "gemma-3-27b-it"             # Open-weight Google model
-        - "gemini-2.0-flash-lite"      # Lightweight fallback
+        - "gemini-3.5-flash"           # Fast, capable, massive context
+        - "gemini-2.5-flash"
+        - "gemma-4-31b"
       rpm_limit: 15                    # Free-tier: 15 req/min per key
 
     - name: "cerebras"
@@ -80,27 +89,19 @@ llm:
         - "csk-xxxxxxxxxxxxxxxxxxxx"
       base_url: "https://api.cerebras.ai/v1/chat/completions"
       models:
-        - "llama-3.3-70b"
-        - "llama-3.1-8b"
-      rpm_limit: 30
+        - "gpt-oss-120b"
+        - "zai-glm-4.7"
+      rpm_limit: 5
 
-    # - name: "cohere"
-    #   api_keys:
-    #     - ""
-    #   base_url: "https://api.cohere.com/v2/chat"
-    #   models:
-    #     - "command-r-plus"
-    #     - "command-r"
-    #   rpm_limit: 20
-
-    # - name: "openrouter"
-    #   api_keys:
-    #     - ""
-    #   base_url: "https://openrouter.ai/api/v1/chat/completions"
-    #   models:
-    #     - "meta-llama/llama-3.3-70b-instruct:free"
-    #     - "google/gemma-3-27b-it:free"
-    #   rpm_limit: 20
+    - name: "openrouter"
+      api_keys:                        # https://openrouter.ai/keys
+        - ""
+      base_url: "https://openrouter.ai/api/v1/chat/completions"
+      models:
+        - "openai/gpt-oss-120b:free"
+        - "google/gemma-4-31b:free"
+        - "qwen/qwen3-next-80b-a3b-instruct:free"
+      rpm_limit: 20
 
   # ── Per-Stage Model Preferences ──────────────────────────────────────────
   # Each stage defines an ordered list of models (primary → fallbacks).
@@ -109,32 +110,42 @@ llm:
   # provider, all available models are tried in config order.
   #
   # Design rationale:
-  #   scorecard:   structured extraction → any large model; low temperature
-  #   evaluation:  nuanced scoring → prefer large models for accuracy
-  #   gap_analysis: search/match → lighter model is sufficient
+  #   scorecard:   structured extraction → gpt-oss-120b (largest free model, 3 providers)
+  #   evaluation:  nuanced scoring → gpt-oss-120b primary, qwen3-32b for throughput
+  #   gap_analysis: huge context (LinkedIn data) → gemini-3.5-flash (1M+ context, low RPD ok here)
+  #
+  # Rate limit awareness:
+  #   - gpt-oss-120b: available on Groq (30 RPM), OpenRouter (20 RPM), Cerebras (5 RPM)
+  #   - Gemini flash models: only 20 RPD — use sparingly, not for batch
+  #   - gemma-4-31b: 1,500 RPD + unlimited TPM — best Google workhorse
+  #   - qwen/qwen3-32b: 60 RPM on Groq — best throughput fallback
   stages:
     scorecard:
       temperature: 0.15               # Low for consistent structured output
-      max_tokens: 1500                # Scorecards are ~800-1200 tokens
+      max_tokens: 2000                # Scorecards are ~800-1200 tokens
       models:
-        - "llama-3.3-70b-versatile"   # Groq — best structured output
-        - "gemini-2.0-flash"          # Gemini fallback
-        - "llama-3.3-70b"             # Cerebras fallback
+        - "openai/gpt-oss-120b"       # Groq — 120B dense, best structured output
+        - "openai/gpt-oss-120b:free"  # OpenRouter — same model, cascade fallback
+        - "gpt-oss-120b"              # Cerebras — same model, last resort (5 RPM)
+        - "meta-llama/llama-4-scout-17b-16e-instruct"  # Groq — Llama 4 MoE
+        - "gemini-3.5-flash"          # Google — great quality but only 20 RPD
+        - "qwen/qwen3-32b"            # Groq — 60 RPM high throughput fallback
     evaluation:
       temperature: 0.10               # Very low for reproducible scoring
       max_tokens: 800                 # Score + shortcomings list
       models:
-        - "llama-3.3-70b-versatile"   # Prefer large model for nuance
-        - "gemini-2.0-flash"
-        - "llama-3.3-70b"
+        - "openai/gpt-oss-120b"       # Groq — best accuracy for scoring
+        - "openai/gpt-oss-120b:free"  # OpenRouter fallback
+        - "qwen/qwen3-32b"            # Groq — 60 RPM high throughput
+        - "gemma-4-31b"               # Google — 1,500 RPD, unlimited TPM
     gap_analysis:
       temperature: 0.10               # Low for factual matching
       max_tokens: 1200                # Coverable + uncoverable lists
       models:
-        - "llama-3.1-8b-instant"      # Light task → fast/cheap model
-        - "gemma-3-27b-it"            # Gemini lightweight fallback
-        - "llama-3.1-8b"              # Cerebras fallback
-        # - "llama3.1:8b"             # Uncomment if Ollama is running locally
+        - "gemini-3.5-flash"          # Massive 1M+ context, ideal for LinkedIn data
+        - "gemma-4-31b"               # Google — 1,500 RPD fallback
+        - "google/gemma-4-31b:free"   # OpenRouter — additional Gemma capacity
+        - "openai/gpt-oss-120b"       # Groq — if Google is exhausted
 
 # ── User Profile Paths ──────────────────────────────────────────────────────
 # Used by the LLM scoring pipeline to evaluate resume against job scorecards.
