@@ -99,7 +99,8 @@ core-job-tracker/
 │       ├── scorecards/
 │       │   └── job_<id>.scorecard.json   ← LLM-generated evaluation scheme
 │       └── shortcomings/
-│           └── job_<id>.shortcomings.json ← Resume gaps for this job
+│           ├── job_<id>.shortcomings.json ← Resume gaps for this job
+│           └── job_<id>.gap_analysis.json ← LinkedIn gap analysis results
 ├── user_details/                ← Your profile data (untracked)
 │   ├── resume.md
 │   ├── extra.md
@@ -198,18 +199,19 @@ Open **http://localhost:8501** in your browser.
 | Tab | Contents | Editable |
 |---|---|---|
 | **🎯 Active Radar** | All visible jobs not yet applied to | ✅ App (saves date) · 🚫 Skip (hides job) |
-| **📤 Sent Applications** | All jobs with an application date | Read-only · Click row to open details |
-| **📦 Archived** | Delisted jobs (removed from live board) | Read-only · Click row to view cached JD |
+| **📤 Sent Applications** | All jobs with an application date | Read-only · Click 🔗 to open details |
+| **📦 Archived** | Delisted jobs (removed from live board) | Read-only · Click 🔗 to view cached JD |
 | **🚫 Skipped** | Live jobs marked as unsuitable | Uncheck 🚫 to restore to Active Radar |
 
 **Sidebar controls:** Company filter, keyword search, sort priority (Deadline ↑ / Relevance ↓ / Posted Date ↓), deadline alert window.
 - **🚀 Run Scraper:** Fetches latest jobs via backend subprocess.
 - **🧹 Prune Dead Jobs:** Permanently deletes files and CSV rows for unapplied jobs in the Archived/Skipped state.
 
-**Job Details modal (click any row or use the selector):**
+**Job Details Page (click 🔗 View on any row):**
+Opens in a new browser tab via URL routing (fully compatible with Cloudflare Tunnels).
 - `📄 Job Description` — Full rendered Markdown from the `.md` file
 - `✏️ My Notes` — Edit and save directly to the `## Notes` section of the `.md` file
-- `🤖 LLM / Resume` — Scorecard viewer/editor, resume scoring, LinkedIn gap analysis
+- `🤖 LLM / Resume` — Express Pipeline (1-click evaluation), scorecard editor, resume scoring, and LinkedIn gap analysis
 
 ---
 
@@ -275,7 +277,6 @@ python src/state_tracker.py
 
 - **Workday pagination hardcoded to 20** — The CXS API enforces max 20 per call. Currently handled by looping, but the offset logic should be centralized.
 - **Console output interleaving** — Parallel scraping causes mixed output from multiple companies. Consider per-company log buffering.
-- **Streamlit rerun hacks** — Version counters (`t1_ver`, `t2_ver`) force table refreshes after edits. May break on future Streamlit versions.
 
 ---
 

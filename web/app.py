@@ -55,9 +55,8 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* ── Hide Streamlit chrome ── */
+    /* ── Hide Streamlit chrome (keep header so sidebar toggle remains accessible) ── */
     #MainMenu                    { visibility: hidden; }
-    header                       { visibility: hidden; }
     footer                       { visibility: hidden; }
     [data-testid="stToolbar"]    { display: none; }
     .block-container             { padding-top: 1.5rem !important; }
@@ -105,12 +104,15 @@ _SORT_MAP = {
     "Company A→Z":   ("_company",              True),
 }
 
-_ACTIVE_BASE   = ["applied_bool", "skipped_bool", "relevance", "_company", "job_id", "title",
-                  "first_discovered_on", "last_date"]
-_SENT_BASE     = ["applied_bool", "applied", "relevance", "_company", "job_id", "title",
-                  "first_discovered_on", "last_date"]
-_ARCHIVED_BASE = ["_company", "job_id", "title", "first_discovered_on", "last_date"]
-_SKIPPED_BASE  = ["skipped_bool", "_company", "job_id", "title", "first_discovered_on", "last_date"]
+# ---------------------------------------------------------------------------
+# Tab configurations (DRY refactor)
+# ---------------------------------------------------------------------------
+
+_COMMON_COLS   = ["view_url", "_company", "job_id", "title", "first_discovered_on", "last_date"]
+_ACTIVE_BASE   = ["applied_bool", "skipped_bool", "relevance"] + _COMMON_COLS
+_SENT_BASE     = ["applied_bool", "applied", "relevance"] + _COMMON_COLS
+_ARCHIVED_BASE = _COMMON_COLS.copy()
+_SKIPPED_BASE  = ["skipped_bool"] + _COMMON_COLS
 
 # ---------------------------------------------------------------------------
 # Markdown notes helpers
@@ -202,6 +204,9 @@ def load_all_jobs() -> pd.DataFrame:
     if "skipped" not in combined.columns:
         combined["skipped"] = ""
     combined["skipped_bool"] = combined["skipped"].apply(_is_skipped)
+    combined["view_url"] = combined.apply(
+        lambda r: f"/?company={r['_company']}&job_id={r['job_id']}", axis=1
+    )
     return combined
 
 
@@ -258,10 +263,11 @@ def _apply_sort(df: pd.DataFrame, sort1: str, sort2: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 _COL_CFG = {
-    "open_modal":          st.column_config.CheckboxColumn(
-                               "📖",
-                               help="Open full job details",
+    "view_url":            st.column_config.LinkColumn(
+                               "🔗",
+                               help="Open job details in a new tab",
                                width="small",
+                               display_text="View",
                            ),
     "applied_bool":        st.column_config.CheckboxColumn(
                                "App",
@@ -286,34 +292,74 @@ _COL_CFG = {
 
 
 # ---------------------------------------------------------------------------
-# Job Details modal
+# Job detail page  (standalone — served at /?company=X&job_id=Y)
 # ---------------------------------------------------------------------------
 
-@st.dialog("Job Details", width="large")
-def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
-    st.markdown(f"### {title}")
-    st.caption(f"**{company}**  ·  `{job_id}`")
+def render_job_detail_page(company: str, job_id: str) -> None:
+    """
+    Full-page job detail view routed via URL query params.
+    Opens in a new browser tab; safe behind Cloudflare Tunnel (relative URLs).
+    Never calls load_all_jobs() — reads only the files for this one job.
+    """
+    import hashlib
+
+    config    = config_engine.load_config("config.yaml")
+    all_paths = config_engine.resolve_output_paths(config)
+    path_map  = {p["name"]: p for p in all_paths}
+
+    if company not in path_map:
+        st.error(f"❌ Company **{company}** not found in config.yaml.")
+        st.stop()
+
+    paths    = path_map[company]
+    safe_id  = config_engine.sanitize_filename(job_id)
+    md_dir   = Path(paths["job_details_dir"])
+    sc_dir   = Path(paths["scorecards_dir"])
+    sh_dir   = Path(paths["shortcomings_dir"])
+    md_path  = md_dir  / f"job_{safe_id}.md"
+    sc_path  = sc_dir  / f"job_{safe_id}.scorecard.json"
+    sh_path  = sh_dir  / f"job_{safe_id}.shortcomings.json"
+    gap_path = sh_dir  / f"job_{safe_id}.gap_analysis.json"
+
+    # ── Header ───────────────────────────────────────────────────────────────
+    col_nav, col_title = st.columns([1, 5])
+    with col_nav:
+        st.markdown("[← Tracker](/)", unsafe_allow_html=True)
+        if st.button("🔄 Refresh", key="detail_refresh"):
+            st.rerun()
+    with col_title:
+        # Try to pull title from markdown h1 line
+        md_text_raw = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+        title_line  = next((l.lstrip("# ").strip() for l in md_text_raw.splitlines() if l.startswith("#")), job_id)
+        st.markdown(f"### {title_line}")
+        st.caption(f"**{company}**  ·  `{job_id}`")
     st.divider()
 
-    md_path = Path(md_dir) / f"job_{job_id}.md"
-    file_mtime = md_path.stat().st_mtime if md_path.exists() else 0
-    notes_key = f"notes_input_{job_id}_{file_mtime}"
-
-    def handle_save():
-        if md_path.exists():
-            current_md = md_path.read_text(encoding="utf-8")
-            new_val = st.session_state.get(notes_key, "")
-            updated_md = _write_notes(current_md, new_val)
-            md_path.write_text(updated_md, encoding="utf-8")
+    # ── Resume hash (used for staleness checks) ───────────────────────────────
+    profile_cfg = config.get("user_profile") or {}
+    resume_path = Path(profile_cfg.get("resume_path", "user_details/resume.md"))
+    current_resume_hash = ""
+    if resume_path.exists():
+        current_resume_hash = hashlib.sha256(
+            resume_path.read_text(encoding="utf-8").encode()
+        ).hexdigest()[:12]
 
     md_text = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
 
+    # ── Load LLM config once ──────────────────────────────────────────────────
+    providers, stage_params_map = llm_client.load_llm_config(config)
+    has_providers = len(providers) > 0
+
+    # ── Sub-tabs ─────────────────────────────────────────────────────────────
     tab_jd, tab_notes, tab_llm = st.tabs([
         "📄 Job Description",
         "✏️  My Notes",
         "🤖 LLM / Resume",
     ])
 
+    # ════════════════════════════════════════════════════════════════
+    # TAB: Job Description
+    # ════════════════════════════════════════════════════════════════
     with tab_jd:
         if md_text:
             st.markdown(md_text, unsafe_allow_html=False)
@@ -323,7 +369,13 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
                 "Run `python src/state_tracker.py` to generate `.md` files."
             )
 
+    # ════════════════════════════════════════════════════════════════
+    # TAB: My Notes
+    # ════════════════════════════════════════════════════════════════
     with tab_notes:
+        file_mtime = md_path.stat().st_mtime if md_path.exists() else 0
+        notes_key  = f"notes_input_{job_id}_{file_mtime}"
+
         current_notes = _read_notes(md_text)
         st.text_area(
             "Your notes — saved directly to the `.md` file",
@@ -337,59 +389,157 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
                 "Key skills to highlight: ..."
             ),
         )
-        if st.button("💾 Save Notes", type="primary", width="stretch", on_click=handle_save):
+
+        def _handle_notes_save() -> None:
+            if md_path.exists():
+                current_md = md_path.read_text(encoding="utf-8")
+                new_val    = st.session_state.get(notes_key, "")
+                md_path.write_text(_write_notes(current_md, new_val), encoding="utf-8")
+
+        if st.button("💾 Save Notes", type="primary", width="stretch",
+                     on_click=_handle_notes_save, key=f"save_notes_{job_id}"):
             st.success("✅ Notes saved to disk.")
 
+    # ════════════════════════════════════════════════════════════════
+    # TAB: LLM / Resume
+    # ════════════════════════════════════════════════════════════════
     with tab_llm:
-        # Load config for LLM operations
-        _llm_config = config_engine.load_config("config.yaml")
-        _providers, _stage_params = llm_client.load_llm_config(_llm_config)
-
-        # Resolve paths for this job
-        _all_paths = config_engine.resolve_output_paths(_llm_config)
-        _path_map = {p["name"]: p for p in _all_paths}
-        _safe_id = config_engine.sanitize_filename(job_id)
-
-        _has_providers = len(_providers) > 0
-
-        if company in _path_map:
-            _scorecards_dir = Path(_path_map[company]["scorecards_dir"])
-            _shortcomings_dir = Path(_path_map[company]["shortcomings_dir"])
-            _scorecard_path = _scorecards_dir / f"job_{_safe_id}.scorecard.json"
-            _shortcomings_path = _shortcomings_dir / f"job_{_safe_id}.shortcomings.json"
-        else:
-            _scorecard_path = None
-            _shortcomings_path = None
-
-        if not _has_providers:
+        if not has_providers:
             st.warning(
                 "⚠️ **No LLM providers configured.**  \n"
                 "Add at least one API key to `config.yaml → llm.providers` to enable scoring."
             )
 
-        # ── Section A: Scorecard ──────────────────────────────────────
+        # ── Load persisted data from disk ───────────────────────────
+        scorecard_data    = None
+        shortcomings_data = None
+        gap_data          = None
+
+        if sc_path.exists():
+            try:
+                scorecard_data = json.loads(sc_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                scorecard_data = None
+
+        if sh_path.exists():
+            try:
+                shortcomings_data = json.loads(sh_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                shortcomings_data = None
+
+        if gap_path.exists():
+            try:
+                gap_data = json.loads(gap_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                gap_data = None
+
+        # ── Helper: save gap analysis to disk ───────────────────────
+        def _save_gap(gap_result: dict) -> None:
+            gap_dir  = gap_path.parent
+            gap_dir.mkdir(parents=True, exist_ok=True)
+            gap_payload = {
+                "job_id":      job_id,
+                "company":     company,
+                "analyzed_at": datetime.date.today().isoformat(),
+                "resume_hash": current_resume_hash,
+                "coverable":   gap_result.get("coverable", []),
+                "uncoverable": gap_result.get("uncoverable", []),
+            }
+            gap_path.write_text(
+                json.dumps(gap_payload, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+        # ════════════════════════════════════════════════════════
+        # ⚡ EXPRESS PIPELINE (top-of-tab CTA)
+        # ════════════════════════════════════════════════════════
+        st.markdown("#### ⚡ Express Pipeline")
+        st.caption("Runs all three stages sequentially: Scorecard → Resume Score → LinkedIn Gap Analysis")
+        if has_providers:
+            if st.button("⚡ Run Express Pipeline", type="primary", key=f"express_{job_id}",
+                         use_container_width=True):
+                _express_result: dict = {}
+
+                with st.status("Running Express Pipeline...", expanded=True) as status:
+                    # Stage 1 — Scorecard (skip if exists)
+                    st.write("📋 Stage 1: Scorecard…")
+                    if not scorecard_data:
+                        jd_clean = llm_scorer._strip_notes_section(md_text)
+                        if jd_clean.strip():
+                            sc = llm_scorer.generate_scorecard(
+                                jd_clean, providers,
+                                stage_params=stage_params_map.get("scorecard"),
+                            )
+                            if sc:
+                                sc_dir.mkdir(parents=True, exist_ok=True)
+                                sc_path.write_text(
+                                    json.dumps(sc, indent=2, ensure_ascii=False),
+                                    encoding="utf-8",
+                                )
+                                scorecard_data = sc
+                                st.write("  ✅ Scorecard generated.")
+                            else:
+                                st.write("  ❌ Scorecard generation failed.")
+                        else:
+                            st.write("  ⚠️ Job description is empty — skipped.")
+                    else:
+                        st.write("  ✅ Scorecard already exists — skipped.")
+
+                    # Stage 2 — Resume evaluation
+                    st.write("📊 Stage 2: Resume Evaluation…")
+                    if scorecard_data:
+                        eval_result = llm_scorer.score_job(
+                            company, job_id, config,
+                            scorecard_override=scorecard_data,
+                        )
+                        if "error" not in eval_result:
+                            _express_result = eval_result
+                            st.write(f"  ✅ Score: {eval_result['relevance']}/100")
+                        else:
+                            st.write(f"  ❌ {eval_result['error']}")
+                    else:
+                        st.write("  ⚠️ No scorecard — skipped.")
+
+                    # Stage 3 — Gap analysis
+                    st.write("🔍 Stage 3: LinkedIn Gap Analysis…")
+                    gaps_to_check = _express_result.get("shortcomings", [])
+                    if gaps_to_check:
+                        linkedin_data = llm_scorer._read_linkedin_data(config)
+                        gap_result = llm_scorer.check_linkedin_gaps(
+                            gaps_to_check, linkedin_data, providers,
+                            stage_params=stage_params_map.get("gap_analysis"),
+                        )
+                        if gap_result:
+                            _save_gap(gap_result)
+                            st.write("  ✅ Gap analysis saved.")
+                        else:
+                            st.write("  ❌ Gap analysis failed.")
+                    elif _express_result.get("relevance"):
+                        st.write("  ✅ No shortcomings to check — strong match!")
+                    else:
+                        st.write("  ⚠️ No shortcomings available — skipped.")
+
+                    status.update(label="Express Pipeline complete!", state="complete")
+
+                st.cache_data.clear()
+                st.rerun()
+
+        st.divider()
+
+        # ════════════════════════════════════════════════════════
+        # SECTION A: Scorecard
+        # ════════════════════════════════════════════════════════
         st.markdown("#### 📋 Job Scorecard")
 
-        _scorecard_exists = _scorecard_path and _scorecard_path.exists()
-        _scorecard_data = None
-
-        if _scorecard_exists:
-            try:
-                _scorecard_data = json.loads(_scorecard_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                _scorecard_data = None
-
-        if _scorecard_data:
-            # Show formatted scorecard
-            meta = _scorecard_data.get("meta", {})
+        if scorecard_data:
+            meta = scorecard_data.get("meta", {})
             st.caption(
                 f"**Role:** {meta.get('role', 'N/A')}  ·  "
                 f"**Domains:** {', '.join(meta.get('domains', []))}  ·  "
                 f"**Level:** {meta.get('seniority_level', 'N/A')}"
             )
 
-            # Hard filters
-            hard = _scorecard_data.get("hard_filters", {})
+            hard = scorecard_data.get("hard_filters", {})
             if any(hard.values()):
                 with st.expander("🚧 Hard Filters", expanded=False):
                     if hard.get("min_total_yoe"):
@@ -399,92 +549,91 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
                     if hard.get("regulatory_compliance"):
                         st.write(f"• Compliance: {', '.join(hard['regulatory_compliance'])}")
 
-            # Pillars table
-            pillars = _scorecard_data.get("pillars", {})
+            pillars = scorecard_data.get("pillars", {})
             if pillars:
-                pillar_rows = []
-                for pname, pdata in pillars.items():
-                    pillar_rows.append({
-                        "Pillar": pname,
-                        "Weight": pdata.get("suggested_weight", 0),
-                        "Required": ", ".join(pdata.get("req", [])),
-                        "Equivalents": ", ".join(pdata.get("equiv", [])),
-                    })
                 st.dataframe(
-                    pd.DataFrame(pillar_rows),
+                    pd.DataFrame([
+                        {
+                            "Pillar":     pname,
+                            "Weight":     pdata.get("suggested_weight", 0),
+                            "Required":   ", ".join(pdata.get("req", [])),
+                            "Equivalents":  ", ".join(pdata.get("equiv", [])),
+                        }
+                        for pname, pdata in pillars.items()
+                    ]),
                     hide_index=True,
                     use_container_width=True,
                 )
 
-            # Editable JSON
             with st.expander("✏️ Edit Scorecard JSON", expanded=False):
                 edited_json = st.text_area(
                     "Raw JSON — edit and save",
-                    value=json.dumps(_scorecard_data, indent=2),
+                    value=json.dumps(scorecard_data, indent=2),
                     height=300,
-                    key=f"scorecard_editor_{job_id}",
+                    key=f"sc_editor_{job_id}",
                 )
                 if st.button("💾 Save Edited Scorecard", key=f"save_sc_{job_id}"):
                     try:
                         parsed = json.loads(edited_json)
-                        _scorecard_path.write_text(
+                        sc_path.write_text(
                             json.dumps(parsed, indent=2, ensure_ascii=False),
                             encoding="utf-8",
                         )
                         st.success("✅ Scorecard saved.")
+                        st.rerun()
                     except json.JSONDecodeError as e:
                         st.error(f"❌ Invalid JSON: {e}")
         else:
             st.info("No scorecard generated yet for this job.")
 
-        if _has_providers:
-            btn_label = "🔄 Regenerate Scorecard" if _scorecard_data else "⚡ Generate Scorecard"
-            if st.button(btn_label, key=f"gen_sc_{job_id}", type="primary" if not _scorecard_data else "secondary"):
+        if has_providers:
+            btn_label = "🔄 Regenerate Scorecard" if scorecard_data else "📋 Generate Scorecard"
+            if st.button(btn_label, key=f"gen_sc_{job_id}",
+                         type="secondary" if scorecard_data else "primary"):
                 with st.spinner("Generating scorecard from job description..."):
-                    jd = md_text
-                    jd_clean = llm_scorer._strip_notes_section(jd) if jd else ""
+                    jd_clean = llm_scorer._strip_notes_section(md_text)
                     if jd_clean.strip():
                         sc = llm_scorer.generate_scorecard(
-                            jd_clean, _providers,
-                            stage_params=_stage_params.get("scorecard"),
+                            jd_clean, providers,
+                            stage_params=stage_params_map.get("scorecard"),
                         )
                         if sc:
-                            _scorecards_dir.mkdir(parents=True, exist_ok=True)
-                            _scorecard_path.write_text(
+                            sc_dir.mkdir(parents=True, exist_ok=True)
+                            sc_path.write_text(
                                 json.dumps(sc, indent=2, ensure_ascii=False),
                                 encoding="utf-8",
                             )
                             st.success("✅ Scorecard generated!")
                             st.rerun()
                         else:
-                            st.error("❌ Scorecard generation failed. Check terminal for details.")
+                            st.error("❌ Scorecard generation failed. Check terminal.")
                     else:
                         st.warning("Job description is empty.")
 
         st.divider()
 
-        # ── Section B: Resume Evaluation ──────────────────────────────
+        # ════════════════════════════════════════════════════════
+        # SECTION B: Resume Evaluation
+        # ════════════════════════════════════════════════════════
         st.markdown("#### 📊 Resume Evaluation")
 
-        _shortcomings_exists = _shortcomings_path and _shortcomings_path.exists()
-        _shortcomings_data = None
-
-        if _shortcomings_exists:
-            try:
-                _shortcomings_data = json.loads(_shortcomings_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                _shortcomings_data = None
-
-        if _shortcomings_data:
-            sc_rel = _shortcomings_data.get("relevance", 0)
-            sc_gaps = _shortcomings_data.get("shortcomings", [])
-            sc_time = _shortcomings_data.get("evaluated_at", "")
+        if shortcomings_data:
+            sc_rel   = shortcomings_data.get("relevance", 0)
+            sc_gaps  = shortcomings_data.get("shortcomings", [])
+            sc_time  = shortcomings_data.get("evaluated_at", "")
+            sc_hash  = shortcomings_data.get("resume_hash", "")
 
             col_score, col_info = st.columns([1, 3])
             with col_score:
                 st.metric("Relevance", f"{sc_rel}/100")
             with col_info:
                 st.caption(f"Evaluated: {sc_time[:19] if sc_time else 'N/A'}")
+                # Staleness check (scorecard is JD-only; evaluation & gap depend on resume)
+                if sc_hash and sc_hash != current_resume_hash:
+                    st.warning(
+                        "⚠️ Your resume has changed since this evaluation was generated. "
+                        "Scores and shortcomings may be stale — click **Score My Resume** to update."
+                    )
                 if sc_gaps:
                     st.markdown("**Shortcomings:**")
                     for gap in sc_gaps:
@@ -494,12 +643,13 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
         else:
             st.info("Resume not yet evaluated against this job.")
 
-        if _has_providers and _scorecard_data:
-            if st.button("📊 Score My Resume", key=f"eval_{job_id}", type="primary" if not _shortcomings_data else "secondary"):
+        if has_providers and scorecard_data:
+            if st.button("📊 Score My Resume", key=f"eval_{job_id}",
+                         type="secondary" if shortcomings_data else "primary"):
                 with st.spinner("Evaluating resume against scorecard..."):
                     result = llm_scorer.score_job(
-                        company, job_id, _llm_config,
-                        scorecard_override=_scorecard_data,
+                        company, job_id, config,
+                        scorecard_override=scorecard_data,
                     )
                     if "error" in result:
                         st.error(f"❌ {result['error']}")
@@ -507,75 +657,66 @@ def show_job_modal(job_id: str, title: str, company: str, md_dir: str) -> None:
                         st.success(f"✅ Score: {result['relevance']}/100")
                         st.cache_data.clear()
                         st.rerun()
-        elif not _scorecard_data and _has_providers:
+        elif not scorecard_data and has_providers:
             st.caption("Generate a scorecard first to enable resume scoring.")
 
         st.divider()
 
-        # ── Section C: LinkedIn Gap Check ─────────────────────────────
+        # ════════════════════════════════════════════════════════
+        # SECTION C: LinkedIn Gap Analysis
+        # ════════════════════════════════════════════════════════
         st.markdown("#### 🔍 LinkedIn Gap Analysis")
 
-        if _shortcomings_data and _shortcomings_data.get("shortcomings"):
-            if _has_providers:
-                if st.button("🔍 Check LinkedIn Gaps", key=f"gap_{job_id}"):
-                    with st.spinner("Analyzing LinkedIn data against shortcomings..."):
-                        linkedin_data = llm_scorer._read_linkedin_data(_llm_config)
-                        gap_result = llm_scorer.check_linkedin_gaps(
-                            _shortcomings_data["shortcomings"],
-                            linkedin_data,
-                            _providers,
-                            stage_params=_stage_params.get("gap_analysis"),
-                        )
-                        if gap_result:
-                            if gap_result.get("coverable"):
-                                st.markdown(f"**✅ Coverable gaps ({len(gap_result['coverable'])}):**")
-                                for item in gap_result["coverable"]:
-                                    st.markdown(f"- **{item.get('gap', '')}**")
-                                    st.caption(f"  Evidence: {item.get('evidence', '')} (from {item.get('source_file', '')})")
-                            if gap_result.get("uncoverable"):
-                                st.markdown(f"**❌ Uncoverable gaps ({len(gap_result['uncoverable'])}):**")
-                                for gap in gap_result["uncoverable"]:
-                                    st.markdown(f"- {gap}")
-                        else:
-                            st.error("Gap analysis failed.")
-        elif _shortcomings_data and not _shortcomings_data.get("shortcomings"):
+        if gap_data:
+            gap_hash = gap_data.get("resume_hash", "")
+            gap_time = gap_data.get("analyzed_at", "")
+            st.caption(f"Analyzed: {gap_time[:19] if gap_time else 'N/A'}")
+            if gap_hash and gap_hash != current_resume_hash:
+                st.warning(
+                    "⚠️ Your resume has changed since this gap analysis was generated. "
+                    "Click **Check LinkedIn Gaps** to refresh."
+                )
+
+            coverable   = gap_data.get("coverable", [])
+            uncoverable = gap_data.get("uncoverable", [])
+
+            if coverable:
+                st.markdown(f"**✅ Coverable gaps ({len(coverable)}):**")
+                for item in coverable:
+                    st.markdown(f"- **{item.get('gap', '')}**")
+                    st.caption(
+                        f"  Evidence: {item.get('evidence', '')} "
+                        f"(from {item.get('source_file', '')})"
+                    )
+            if uncoverable:
+                st.markdown(f"**❌ Uncoverable gaps ({len(uncoverable)}):**")
+                for gap in uncoverable:
+                    st.markdown(f"- {gap}")
+            if not coverable and not uncoverable:
+                st.success("No gaps found — strong LinkedIn alignment!")
+        elif shortcomings_data and not shortcomings_data.get("shortcomings"):
             st.success("No shortcomings to check — resume is a strong match!")
         else:
+            st.info("Gap analysis not yet run. Click below or use Express Pipeline.")
+
+        if has_providers and shortcomings_data and shortcomings_data.get("shortcomings"):
+            if st.button("🔍 Check LinkedIn Gaps", key=f"gap_{job_id}"):
+                with st.spinner("Analyzing LinkedIn data against shortcomings..."):
+                    linkedin_data = llm_scorer._read_linkedin_data(config)
+                    gap_result = llm_scorer.check_linkedin_gaps(
+                        shortcomings_data["shortcomings"],
+                        linkedin_data,
+                        providers,
+                        stage_params=stage_params_map.get("gap_analysis"),
+                    )
+                    if gap_result:
+                        _save_gap(gap_result)
+                        st.success("✅ Gap analysis complete — results saved.")
+                        st.rerun()
+                    else:
+                        st.error("❌ Gap analysis failed.")
+        elif not shortcomings_data:
             st.caption("Score your resume first to enable LinkedIn gap analysis.")
-
-
-
-# ---------------------------------------------------------------------------
-# Generic editor renderer with open_modal action column
-# ---------------------------------------------------------------------------
-
-def _render_editor(
-    source_df:   pd.DataFrame,
-    display_cols: list[str],
-    editor_key:  str,
-    editable_cols: set[str],
-) -> pd.DataFrame:
-    """
-    Prepend open_modal=False column, render st.data_editor, return the result.
-    Non-editable columns have disabled=True set via _COL_CFG.
-    """
-    display = source_df[display_cols].copy().reset_index(drop=True)
-    display["open_modal"] = False
-
-    col_cfg = {k: v for k, v in _COL_CFG.items() if k in display.columns}
-    # Force-disable columns not in editable set
-    for col in display.columns:
-        if col not in editable_cols and col != "open_modal" and col in col_cfg:
-            pass  # disabled already set per column in _COL_CFG
-
-    return st.data_editor(
-        display,
-        column_config=col_cfg,
-        width="stretch",
-        hide_index=True,
-        num_rows="fixed",
-        key=editor_key,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -584,10 +725,16 @@ def _render_editor(
 
 def main() -> None:
 
-    # ── Initialise ──────────────────────────────────────────────────────────
+    # ── URL Routing — job detail page ────────────────────────────────────────
+    qp_company = st.query_params.get("company")
+    qp_job_id  = st.query_params.get("job_id")
+    if qp_company and qp_job_id:
+        render_job_detail_page(qp_company, qp_job_id)
+        return
 
     # ── Load data ───────────────────────────────────────────────────────────
     df = load_all_jobs()
+
 
     if df.empty:
         st.warning(
@@ -740,74 +887,55 @@ def main() -> None:
         if active_df.empty:
             st.info("No active jobs match your filters. Try broadening your search.")
         else:
-            t1_ver    = st.session_state.get("t1_ver", 0)
-            t1_key    = f"tab1_editor_{t1_ver}"
             t1_source = active_df[_ACTIVE_BASE].copy().reset_index(drop=True)
-            t1_source["open_modal"] = False
 
-            # 1. INTERCEPT STATE BEFORE RENDERING
-            modal_row = None
-            if t1_key in st.session_state:
-                edits = st.session_state[t1_key].get("edited_rows", {})
-                for idx_str, changes in edits.items():
-                    if changes.get("open_modal") is True:
-                        modal_row = active_df.iloc[int(idx_str)]
-                        t1_ver += 1
-                        st.session_state["t1_ver"] = t1_ver
-                        t1_key = f"tab1_editor_{t1_ver}"  # Force fresh editor key
-                        break
-
-            # 2. RENDER EDITOR
             edited = st.data_editor(
                 t1_source,
                 column_config={k: v for k, v in _COL_CFG.items() if k in t1_source.columns},
                 width="stretch",
                 hide_index=True,
                 num_rows="fixed",
-                key=t1_key,
+                key="tab1_editor",
             )
 
-            # 3. TRIGGER MODAL OR PROCESS SAVES
-            if modal_row is not None:
-                show_job_modal(modal_row["job_id"], modal_row["title"], modal_row["_company"], modal_row["_md_dir"])
-            else:
-                # ── Write-back: applied_bool + skipped_bool + relevance ────
-                changes: list[dict] = []
-                for idx in range(min(len(edited), len(t1_source))):
-                    orig     = t1_source.iloc[idx]
-                    edit     = edited.iloc[idx]
-                    full_row = active_df.iloc[idx]
+            # Write-back: applied_bool + skipped_bool + relevance
+            changes: list[dict] = []
+            for idx in range(min(len(edited), len(t1_source))):
+                orig     = t1_source.iloc[idx]
+                edit     = edited.iloc[idx]
+                full_row = active_df.iloc[idx]
 
-                    if bool(edit["applied_bool"]) != bool(orig["applied_bool"]):
-                        new_val = (
-                            datetime.date.today().isoformat()
-                            if edit["applied_bool"] else ""
-                        )
-                        changes.append({
-                            "job_id":   full_row["job_id"],
-                            "csv_path": full_row["_csv_path"],
-                            "field":    "applied",
-                            "value":    new_val,
-                        })
+                if bool(edit["applied_bool"]) != bool(orig["applied_bool"]):
+                    new_val = (
+                        datetime.date.today().isoformat()
+                        if edit["applied_bool"] else ""
+                    )
+                    changes.append({
+                        "job_id":   full_row["job_id"],
+                        "csv_path": full_row["_csv_path"],
+                        "field":    "applied",
+                        "value":    new_val,
+                    })
 
-                    if bool(edit["skipped_bool"]) != bool(orig["skipped_bool"]):
-                        changes.append({
-                            "job_id":   full_row["job_id"],
-                            "csv_path": full_row["_csv_path"],
-                            "field":    "skipped",
-                            "value":    "yes" if edit["skipped_bool"] else "",
-                        })
+                if bool(edit["skipped_bool"]) != bool(orig["skipped_bool"]):
+                    changes.append({
+                        "job_id":   full_row["job_id"],
+                        "csv_path": full_row["_csv_path"],
+                        "field":    "skipped",
+                        "value":    "yes" if edit["skipped_bool"] else "",
+                    })
 
-                    if int(edit["relevance"]) != int(orig["relevance"]):
-                        changes.append({
-                            "job_id":   full_row["job_id"],
-                            "csv_path": full_row["_csv_path"],
-                            "field":    "relevance",
-                            "value":    int(edit["relevance"]),
-                        })
+                if int(edit["relevance"]) != int(orig["relevance"]):
+                    changes.append({
+                        "job_id":   full_row["job_id"],
+                        "csv_path": full_row["_csv_path"],
+                        "field":    "relevance",
+                        "value":    int(edit["relevance"]),
+                    })
 
-                if changes:
-                    _write_back(changes)
+            if changes:
+                _write_back(changes)
+
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # TAB 2 — Sent Applications (editable — uncheck "App" to undo)
@@ -820,50 +948,30 @@ def main() -> None:
             )
         else:
             st.caption("Uncheck **App** to return a job to Active Radar.")
-            t2_ver    = st.session_state.get("t2_ver", 0)
-            t2_key    = f"tab2_editor_{t2_ver}"
             t2_source = sent_df[_SENT_BASE].copy().reset_index(drop=True)
-            t2_source["open_modal"] = False
 
-            # 1. INTERCEPT STATE BEFORE RENDERING
-            modal_row = None
-            if t2_key in st.session_state:
-                edits = st.session_state[t2_key].get("edited_rows", {})
-                for idx_str, changes in edits.items():
-                    if changes.get("open_modal") is True:
-                        modal_row = sent_df.iloc[int(idx_str)]
-                        t2_ver += 1
-                        st.session_state["t2_ver"] = t2_ver
-                        t2_key = f"tab2_editor_{t2_ver}"  # Force fresh editor key
-                        break
-
-            # 2. RENDER EDITOR
             edited_sent = st.data_editor(
                 t2_source,
                 column_config={k: v for k, v in _COL_CFG.items() if k in t2_source.columns},
                 width="stretch",
                 hide_index=True,
                 num_rows="fixed",
-                key=t2_key,
+                key="tab2_editor",
             )
 
-            # 3. TRIGGER MODAL OR PROCESS SAVES
-            if modal_row is not None:
-                show_job_modal(modal_row["job_id"], modal_row["title"], modal_row["_company"], modal_row["_md_dir"])
-            else:
-                # Undo applied: applied_bool flipped from True → False
-                changes: list[dict] = []
-                for idx in range(min(len(edited_sent), len(t2_source))):
-                    if not edited_sent.iloc[idx]["applied_bool"] and t2_source.iloc[idx]["applied_bool"]:
-                        full_row = sent_df.iloc[idx]
-                        changes.append({
-                            "job_id":   full_row["job_id"],
-                            "csv_path": full_row["_csv_path"],
-                            "field":    "applied",
-                            "value":    "",
-                        })
-                if changes:
-                    _write_back(changes)
+            # Undo applied: applied_bool flipped from True -> False
+            changes: list[dict] = []
+            for idx in range(min(len(edited_sent), len(t2_source))):
+                if not edited_sent.iloc[idx]["applied_bool"] and t2_source.iloc[idx]["applied_bool"]:
+                    full_row = sent_df.iloc[idx]
+                    changes.append({
+                        "job_id":   full_row["job_id"],
+                        "csv_path": full_row["_csv_path"],
+                        "field":    "applied",
+                        "value":    "",
+                    })
+            if changes:
+                _write_back(changes)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # TAB 3 — Archived (read-only except for 📖 open_modal)
@@ -875,38 +983,18 @@ def main() -> None:
                 "Jobs appear here when removed from the live board on the next scraper run."
             )
         else:
-            st.caption("Read-only. Click 📖 to view the cached Job Description.")
-            t3_ver    = st.session_state.get("t3_ver", 0)
-            t3_key    = f"tab3_editor_{t3_ver}"
+            st.caption("Read-only. Click 🔗 to view the cached Job Description in a new tab.")
             t3_source = archived_df[_ARCHIVED_BASE].copy().reset_index(drop=True)
-            t3_source["open_modal"] = False
 
-            # 1. INTERCEPT STATE BEFORE RENDERING
-            modal_row = None
-            if t3_key in st.session_state:
-                edits = st.session_state[t3_key].get("edited_rows", {})
-                for idx_str, changes in edits.items():
-                    if changes.get("open_modal") is True:
-                        modal_row = archived_df.iloc[int(idx_str)]
-                        t3_ver += 1
-                        st.session_state["t3_ver"] = t3_ver
-                        t3_key = f"tab3_editor_{t3_ver}"  # Force fresh editor key
-                        break
-
-            # 2. RENDER EDITOR
             edited_arch = st.data_editor(
                 t3_source,
                 column_config={k: v for k, v in _COL_CFG.items() if k in t3_source.columns},
-                disabled=_ARCHIVED_BASE,   # all content cols read-only; open_modal stays editable
+                disabled=[c for c in _ARCHIVED_BASE if c in t3_source.columns],
                 width="stretch",
                 hide_index=True,
                 num_rows="fixed",
-                key=t3_key,
+                key="tab3_editor",
             )
-
-            # 3. TRIGGER MODAL OR PROCESS SAVES
-            if modal_row is not None:
-                show_job_modal(modal_row["job_id"], modal_row["title"], modal_row["_company"], modal_row["_md_dir"])
 
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -920,52 +1008,32 @@ def main() -> None:
             )
         else:
             st.caption("Uncheck **🚫** to restore a job to Active Radar.")
-            t4_ver    = st.session_state.get("t4_ver", 0)
-            t4_key    = f"tab4_editor_{t4_ver}"
             t4_source = skipped_df[_SKIPPED_BASE].copy().reset_index(drop=True)
-            t4_source["open_modal"] = False
 
-            # 1. INTERCEPT STATE BEFORE RENDERING
-            modal_row = None
-            if t4_key in st.session_state:
-                edits = st.session_state[t4_key].get("edited_rows", {})
-                for idx_str, chgs in edits.items():
-                    if chgs.get("open_modal") is True:
-                        modal_row = skipped_df.iloc[int(idx_str)]
-                        t4_ver += 1
-                        st.session_state["t4_ver"] = t4_ver
-                        t4_key = f"tab4_editor_{t4_ver}"
-                        break
-
-            # 2. RENDER EDITOR
             edited_skip = st.data_editor(
                 t4_source,
                 column_config={k: v for k, v in _COL_CFG.items() if k in t4_source.columns},
                 width="stretch",
                 hide_index=True,
                 num_rows="fixed",
-                key=t4_key,
+                key="tab4_editor",
             )
 
-            # 3. TRIGGER MODAL OR PROCESS UN-SKIP
-            if modal_row is not None:
-                show_job_modal(modal_row["job_id"], modal_row["title"], modal_row["_company"], modal_row["_md_dir"])
-            else:
-                changes: list[dict] = []
-                for idx in range(min(len(edited_skip), len(t4_source))):
-                    orig     = t4_source.iloc[idx]
-                    edit     = edited_skip.iloc[idx]
-                    full_row = skipped_df.iloc[idx]
-                    # Un-skip when skipped_bool flipped True → False
-                    if not bool(edit["skipped_bool"]) and bool(orig["skipped_bool"]):
-                        changes.append({
-                            "job_id":   full_row["job_id"],
-                            "csv_path": full_row["_csv_path"],
-                            "field":    "skipped",
-                            "value":    "",
-                        })
-                if changes:
-                    _write_back(changes)
+            changes: list[dict] = []
+            for idx in range(min(len(edited_skip), len(t4_source))):
+                orig     = t4_source.iloc[idx]
+                edit     = edited_skip.iloc[idx]
+                full_row = skipped_df.iloc[idx]
+                # Un-skip when skipped_bool flipped True → False
+                if not bool(edit["skipped_bool"]) and bool(orig["skipped_bool"]):
+                    changes.append({
+                        "job_id":   full_row["job_id"],
+                        "csv_path": full_row["_csv_path"],
+                        "field":    "skipped",
+                        "value":    "",
+                    })
+            if changes:
+                _write_back(changes)
 
 
 # ---------------------------------------------------------------------------

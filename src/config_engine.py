@@ -22,6 +22,22 @@ def sanitize_filename(job_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Global Constants & Schemas
+# ---------------------------------------------------------------------------
+
+# The canonical CSV schema for master_jobs.csv across all files
+CSV_COLUMNS: list[str] = [
+    "job_id",
+    "title",
+    "first_discovered_on",
+    "last_date",
+    "visible",
+    "relevance",
+    "applied",
+    "skipped",
+]
+
+# ---------------------------------------------------------------------------
 # Step 1 — Load & validate config.yaml
 # ---------------------------------------------------------------------------
 

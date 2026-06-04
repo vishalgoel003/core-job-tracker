@@ -24,6 +24,7 @@ AGENT.md compliance:
 import argparse
 import csv
 import datetime
+import hashlib
 import json
 import re
 import sys
@@ -45,16 +46,6 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 _LOCK_TIMEOUT_S = 5
-
-CSV_COLUMNS: list[str] = [
-    "job_id",
-    "title",
-    "first_discovered_on",
-    "last_date",
-    "visible",
-    "relevance",
-    "applied",
-]
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +554,7 @@ def score_job(
         return {"error": f"Resume not found: {resume_path}", "scorecard": scorecard}
 
     resume_md = resume_path.read_text(encoding="utf-8")
+    resume_hash = hashlib.sha256(resume_md.encode()).hexdigest()[:12]
 
     # 4. Evaluate resume
     print(f"  [SCORER] Evaluating resume against scorecard ...")
@@ -588,6 +580,7 @@ def score_job(
         "relevance": relevance,
         "evaluated_at": datetime.datetime.now().isoformat(),
         "resume_version": str(resume_path),
+        "resume_hash": resume_hash,
         "shortcomings": shortcomings,
     }
     shortcomings_path.write_text(
@@ -610,7 +603,7 @@ def score_job(
                         rows.append(row)
 
                 with csv_path.open("w", newline="", encoding="utf-8") as fh:
-                    writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+                    writer = csv.DictWriter(fh, fieldnames=config_engine.CSV_COLUMNS, extrasaction="ignore")
                     writer.writeheader()
                     writer.writerows(rows)
 

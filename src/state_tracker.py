@@ -52,17 +52,6 @@ except ImportError:
 # Constants
 # ---------------------------------------------------------------------------
 
-CSV_COLUMNS: list[str] = [
-    "job_id",
-    "title",
-    "first_discovered_on",
-    "last_date",
-    "visible",
-    "relevance",
-    "applied",
-    "skipped",
-]
-
 
 # ---------------------------------------------------------------------------
 # Function 1 — Load existing CSV ledger
@@ -179,7 +168,7 @@ def write_ledger(ledger: dict[str, dict], csv_path: Path) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
     with csv_path.open(mode="w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+        writer = csv.DictWriter(fh, fieldnames=config_engine.CSV_COLUMNS, extrasaction="ignore")
         writer.writeheader()
         for row in ledger.values():
             writer.writerow(row)
