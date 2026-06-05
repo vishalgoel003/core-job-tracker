@@ -109,10 +109,10 @@ _SORT_MAP = {
 # ---------------------------------------------------------------------------
 
 _COMMON_COLS   = ["view_url", "_company", "job_id", "title", "first_discovered_on", "last_date"]
-_ACTIVE_BASE   = ["applied_bool", "skipped_bool", "relevance"] + _COMMON_COLS
-_SENT_BASE     = ["applied_bool", "applied", "relevance"] + _COMMON_COLS
+_ACTIVE_BASE   = ["selected", "relevance"] + _COMMON_COLS
+_SENT_BASE     = ["selected", "relevance", "applied"] + _COMMON_COLS
 _ARCHIVED_BASE = _COMMON_COLS.copy()
-_SKIPPED_BASE  = ["skipped_bool"] + _COMMON_COLS
+_SKIPPED_BASE  = ["selected"] + _COMMON_COLS
 
 # ---------------------------------------------------------------------------
 # Markdown notes helpers
@@ -269,15 +269,11 @@ _COL_CFG = {
                                width="small",
                                display_text="View",
                            ),
-    "applied_bool":        st.column_config.CheckboxColumn(
-                               "App",
-                               help="Check to mark applied (saves today's date). Uncheck to undo.",
+    "selected":            st.column_config.CheckboxColumn(
+                               "☑️",
+                               help="Select rows for bulk actions",
                                width="small",
-                           ),
-    "skipped_bool":        st.column_config.CheckboxColumn(
-                               "🚫",
-                               help="Skip this job — removes it from Active Radar.",
-                               width="small",
+                               default=False,
                            ),
     "relevance":           st.column_config.NumberColumn(
                                "⭐", min_value=0, max_value=100, step=1, width="small",
@@ -887,54 +883,60 @@ def main() -> None:
         if active_df.empty:
             st.info("No active jobs match your filters. Try broadening your search.")
         else:
-            t1_source = active_df[_ACTIVE_BASE].copy().reset_index(drop=True)
+            t1_source = active_df[_ACTIVE_BASE[1:]].copy().reset_index(drop=True)
+            t1_source.insert(0, "selected", False)
 
-            edited = st.data_editor(
-                t1_source,
-                column_config={k: v for k, v in _COL_CFG.items() if k in t1_source.columns},
-                width="stretch",
-                hide_index=True,
-                num_rows="fixed",
-                key="tab1_editor",
-            )
+            with st.form("tab1_bulk_form"):
+                edited = st.data_editor(
+                    t1_source,
+                    column_config={k: v for k, v in _COL_CFG.items() if k in t1_source.columns},
+                    disabled=_COMMON_COLS,
+                    width="stretch",
+                    hide_index=True,
+                    num_rows="fixed",
+                    key="tab1_editor",
+                )
+                
+                col1, col2, col3 = st.columns([1, 1, 4])
+                submit_applied = col1.form_submit_button("✅ Mark Applied", type="primary")
+                submit_skipped = col2.form_submit_button("🚫 Mark Skipped")
+                submit_save    = col3.form_submit_button("💾 Save Relevance")
 
-            # Write-back: applied_bool + skipped_bool + relevance
-            changes: list[dict] = []
-            for idx in range(min(len(edited), len(t1_source))):
-                orig     = t1_source.iloc[idx]
-                edit     = edited.iloc[idx]
-                full_row = active_df.iloc[idx]
+            if submit_applied or submit_skipped or submit_save:
+                changes: list[dict] = []
+                for idx in range(min(len(edited), len(t1_source))):
+                    orig     = t1_source.iloc[idx]
+                    edit     = edited.iloc[idx]
+                    full_row = active_df.iloc[idx]
 
-                if bool(edit["applied_bool"]) != bool(orig["applied_bool"]):
-                    new_val = (
-                        datetime.date.today().isoformat()
-                        if edit["applied_bool"] else ""
-                    )
-                    changes.append({
-                        "job_id":   full_row["job_id"],
-                        "csv_path": full_row["_csv_path"],
-                        "field":    "applied",
-                        "value":    new_val,
-                    })
+                    # 1. Relevance changes
+                    if int(edit["relevance"]) != int(orig["relevance"]):
+                        changes.append({
+                            "job_id":   full_row["job_id"],
+                            "csv_path": full_row["_csv_path"],
+                            "field":    "relevance",
+                            "value":    int(edit["relevance"]),
+                        })
+                    
+                    # 2. Bulk Actions
+                    if edit["selected"]:
+                        if submit_applied:
+                            changes.append({
+                                "job_id":   full_row["job_id"],
+                                "csv_path": full_row["_csv_path"],
+                                "field":    "applied",
+                                "value":    datetime.date.today().isoformat(),
+                            })
+                        elif submit_skipped:
+                            changes.append({
+                                "job_id":   full_row["job_id"],
+                                "csv_path": full_row["_csv_path"],
+                                "field":    "skipped",
+                                "value":    "yes",
+                            })
 
-                if bool(edit["skipped_bool"]) != bool(orig["skipped_bool"]):
-                    changes.append({
-                        "job_id":   full_row["job_id"],
-                        "csv_path": full_row["_csv_path"],
-                        "field":    "skipped",
-                        "value":    "yes" if edit["skipped_bool"] else "",
-                    })
-
-                if int(edit["relevance"]) != int(orig["relevance"]):
-                    changes.append({
-                        "job_id":   full_row["job_id"],
-                        "csv_path": full_row["_csv_path"],
-                        "field":    "relevance",
-                        "value":    int(edit["relevance"]),
-                    })
-
-            if changes:
-                _write_back(changes)
+                if changes:
+                    _write_back(changes)
 
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -948,30 +950,48 @@ def main() -> None:
             )
         else:
             st.caption("Uncheck **App** to return a job to Active Radar.")
-            t2_source = sent_df[_SENT_BASE].copy().reset_index(drop=True)
+            t2_source = sent_df[_SENT_BASE[1:]].copy().reset_index(drop=True)
+            t2_source.insert(0, "selected", False)
 
-            edited_sent = st.data_editor(
-                t2_source,
-                column_config={k: v for k, v in _COL_CFG.items() if k in t2_source.columns},
-                width="stretch",
-                hide_index=True,
-                num_rows="fixed",
-                key="tab2_editor",
-            )
+            with st.form("tab2_bulk_form"):
+                edited_sent = st.data_editor(
+                    t2_source,
+                    column_config={k: v for k, v in _COL_CFG.items() if k in t2_source.columns},
+                    disabled=_COMMON_COLS + ["applied"],
+                    width="stretch",
+                    hide_index=True,
+                    num_rows="fixed",
+                    key="tab2_editor",
+                )
+                
+                col1, col2 = st.columns([1, 5])
+                submit_undo = col1.form_submit_button("↩️ Undo Applied")
+                submit_save_rel = col2.form_submit_button("💾 Save Relevance")
 
-            # Undo applied: applied_bool flipped from True -> False
-            changes: list[dict] = []
-            for idx in range(min(len(edited_sent), len(t2_source))):
-                if not edited_sent.iloc[idx]["applied_bool"] and t2_source.iloc[idx]["applied_bool"]:
+            if submit_undo or submit_save_rel:
+                changes: list[dict] = []
+                for idx in range(min(len(edited_sent), len(t2_source))):
+                    orig     = t2_source.iloc[idx]
+                    edit     = edited_sent.iloc[idx]
                     full_row = sent_df.iloc[idx]
-                    changes.append({
-                        "job_id":   full_row["job_id"],
-                        "csv_path": full_row["_csv_path"],
-                        "field":    "applied",
-                        "value":    "",
-                    })
-            if changes:
-                _write_back(changes)
+                    
+                    if int(edit["relevance"]) != int(orig["relevance"]):
+                        changes.append({
+                            "job_id":   full_row["job_id"],
+                            "csv_path": full_row["_csv_path"],
+                            "field":    "relevance",
+                            "value":    int(edit["relevance"]),
+                        })
+
+                    if submit_undo and edit["selected"]:
+                        changes.append({
+                            "job_id":   full_row["job_id"],
+                            "csv_path": full_row["_csv_path"],
+                            "field":    "applied",
+                            "value":    "",
+                        })
+                if changes:
+                    _write_back(changes)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # TAB 3 — Archived (read-only except for 📖 open_modal)
@@ -1008,32 +1028,36 @@ def main() -> None:
             )
         else:
             st.caption("Uncheck **🚫** to restore a job to Active Radar.")
-            t4_source = skipped_df[_SKIPPED_BASE].copy().reset_index(drop=True)
+            t4_source = skipped_df[_SKIPPED_BASE[1:]].copy().reset_index(drop=True)
+            t4_source.insert(0, "selected", False)
 
-            edited_skip = st.data_editor(
-                t4_source,
-                column_config={k: v for k, v in _COL_CFG.items() if k in t4_source.columns},
-                width="stretch",
-                hide_index=True,
-                num_rows="fixed",
-                key="tab4_editor",
-            )
+            with st.form("tab4_bulk_form"):
+                edited_skip = st.data_editor(
+                    t4_source,
+                    column_config={k: v for k, v in _COL_CFG.items() if k in t4_source.columns},
+                    disabled=_COMMON_COLS,
+                    width="stretch",
+                    hide_index=True,
+                    num_rows="fixed",
+                    key="tab4_editor",
+                )
+                submit_undo_skip = st.form_submit_button("↩️ Restore Selected to Active Radar")
 
-            changes: list[dict] = []
-            for idx in range(min(len(edited_skip), len(t4_source))):
-                orig     = t4_source.iloc[idx]
-                edit     = edited_skip.iloc[idx]
-                full_row = skipped_df.iloc[idx]
-                # Un-skip when skipped_bool flipped True → False
-                if not bool(edit["skipped_bool"]) and bool(orig["skipped_bool"]):
-                    changes.append({
-                        "job_id":   full_row["job_id"],
-                        "csv_path": full_row["_csv_path"],
-                        "field":    "skipped",
-                        "value":    "",
-                    })
-            if changes:
-                _write_back(changes)
+            if submit_undo_skip:
+                changes: list[dict] = []
+                for idx in range(min(len(edited_skip), len(t4_source))):
+                    edit     = edited_skip.iloc[idx]
+                    full_row = skipped_df.iloc[idx]
+                    
+                    if edit["selected"]:
+                        changes.append({
+                            "job_id":   full_row["job_id"],
+                            "csv_path": full_row["_csv_path"],
+                            "field":    "skipped",
+                            "value":    "",
+                        })
+                if changes:
+                    _write_back(changes)
 
 
 # ---------------------------------------------------------------------------
