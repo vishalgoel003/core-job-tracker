@@ -430,7 +430,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                 gap_data = None
 
         # ── Helper: save gap analysis to disk ───────────────────────
-        def _save_gap(gap_result: dict) -> None:
+        def _save_gap(gap_result: dict, linkedin_hash: str = "") -> None:
             gap_dir  = gap_path.parent
             gap_dir.mkdir(parents=True, exist_ok=True)
             gap_payload = {
@@ -438,6 +438,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                 "company":     company,
                 "analyzed_at": datetime.date.today().isoformat(),
                 "resume_hash": current_resume_hash,
+                "linkedin_hash": linkedin_hash,
                 "coverable":   gap_result.get("coverable", []),
                 "uncoverable": gap_result.get("uncoverable", []),
             }
@@ -457,6 +458,10 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                 _express_result: dict = {}
 
                 with st.status("Running Express Pipeline...", expanded=True) as status:
+                    # Fetch linkedin data & hash for stage 3
+                    linkedin_data = llm_scorer._read_linkedin_data(config)
+                    current_linkedin_hash = hashlib.sha256(linkedin_data.encode()).hexdigest()[:12] if linkedin_data else ""
+
                     # Stage 1 — Scorecard (skip if exists)
                     st.write("📋 Stage 1: Scorecard…")
                     if not scorecard_data:
@@ -484,36 +489,42 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                     # Stage 2 — Resume evaluation
                     st.write("📊 Stage 2: Resume Evaluation…")
                     if scorecard_data:
-                        eval_result = llm_scorer.score_job(
-                            company, job_id, config,
-                            scorecard_override=scorecard_data,
-                        )
-                        if "error" not in eval_result:
-                            _express_result = eval_result
-                            st.write(f"  ✅ Score: {eval_result['relevance']}/100")
+                        if shortcomings_data and shortcomings_data.get("resume_hash") == current_resume_hash:
+                            st.write("  ✅ Resume evaluation already exists and is up-to-date — skipped.")
+                            _express_result = shortcomings_data
                         else:
-                            st.write(f"  ❌ {eval_result['error']}")
+                            eval_result = llm_scorer.score_job(
+                                company, job_id, config,
+                                scorecard_override=scorecard_data,
+                            )
+                            if "error" not in eval_result:
+                                _express_result = eval_result
+                                st.write(f"  ✅ Score: {eval_result['relevance']}/100")
+                            else:
+                                st.write(f"  ❌ {eval_result['error']}")
                     else:
                         st.write("  ⚠️ No scorecard — skipped.")
 
                     # Stage 3 — Gap analysis
                     st.write("🔍 Stage 3: LinkedIn Gap Analysis…")
-                    gaps_to_check = _express_result.get("shortcomings", [])
-                    if gaps_to_check:
-                        linkedin_data = llm_scorer._read_linkedin_data(config)
-                        gap_result = llm_scorer.check_linkedin_gaps(
-                            gaps_to_check, linkedin_data, providers,
-                            stage_params=stage_params_map.get("gap_analysis"),
-                        )
-                        if gap_result:
-                            _save_gap(gap_result)
-                            st.write("  ✅ Gap analysis saved.")
-                        else:
-                            st.write("  ❌ Gap analysis failed.")
-                    elif _express_result.get("relevance"):
-                        st.write("  ✅ No shortcomings to check — strong match!")
+                    if gap_data and gap_data.get("resume_hash") == current_resume_hash and gap_data.get("linkedin_hash") == current_linkedin_hash:
+                        st.write("  ✅ Gap analysis already exists and is up-to-date — skipped.")
                     else:
-                        st.write("  ⚠️ No shortcomings available — skipped.")
+                        gaps_to_check = _express_result.get("shortcomings", [])
+                        if gaps_to_check:
+                            gap_result = llm_scorer.check_linkedin_gaps(
+                                gaps_to_check, linkedin_data, providers,
+                                stage_params=stage_params_map.get("gap_analysis"),
+                            )
+                            if gap_result:
+                                _save_gap(gap_result, current_linkedin_hash)
+                                st.write("  ✅ Gap analysis saved.")
+                            else:
+                                st.write("  ❌ Gap analysis failed.")
+                        elif _express_result.get("relevance"):
+                            st.write("  ✅ No shortcomings to check — strong match!")
+                        else:
+                            st.write("  ⚠️ No shortcomings available — skipped.")
 
                     status.update(label="Express Pipeline complete!", state="complete")
 
@@ -699,6 +710,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
             if st.button("🔍 Check LinkedIn Gaps", key=f"gap_{job_id}"):
                 with st.spinner("Analyzing LinkedIn data against shortcomings..."):
                     linkedin_data = llm_scorer._read_linkedin_data(config)
+                    current_linkedin_hash = hashlib.sha256(linkedin_data.encode()).hexdigest()[:12] if linkedin_data else ""
                     gap_result = llm_scorer.check_linkedin_gaps(
                         shortcomings_data["shortcomings"],
                         linkedin_data,
@@ -706,7 +718,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                         stage_params=stage_params_map.get("gap_analysis"),
                     )
                     if gap_result:
-                        _save_gap(gap_result)
+                        _save_gap(gap_result, current_linkedin_hash)
                         st.success("✅ Gap analysis complete — results saved.")
                         st.rerun()
                     else:
@@ -897,10 +909,27 @@ def main() -> None:
                     key="tab1_editor",
                 )
                 
-                col1, col2, col3 = st.columns([1, 1, 4])
+                col1, col2, col3, col4 = st.columns([1, 1, 1, 3])
                 submit_applied = col1.form_submit_button("✅ Mark Applied", type="primary")
                 submit_skipped = col2.form_submit_button("🚫 Mark Skipped")
-                submit_save    = col3.form_submit_button("💾 Save Relevance")
+                submit_score   = col3.form_submit_button("🤖 Bulk Score")
+                submit_save    = col4.form_submit_button("💾 Save Relevance")
+
+            if submit_score:
+                selected_jobs = [active_df.iloc[i] for i in range(len(edited)) if edited.iloc[i]["selected"]]
+                if selected_jobs:
+                    config = config_engine.load_config("config.yaml")
+                    with st.status("Bulk Scoring...", expanded=True) as status:
+                        for i, row in enumerate(selected_jobs):
+                            st.write(f"Scoring {i+1}/{len(selected_jobs)}: {row['job_id']}")
+                            res = llm_scorer.score_job(row['_company'], row['job_id'], config)
+                            if "error" in res:
+                                st.write(f"  ❌ {res['error']}")
+                            else:
+                                st.write(f"  ✅ Score: {res['relevance']}/100")
+                        status.update(label="Bulk Scoring Complete!", state="complete")
+                    st.cache_data.clear()
+                    st.rerun()
 
             if submit_applied or submit_skipped or submit_save:
                 changes: list[dict] = []

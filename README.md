@@ -270,6 +270,7 @@ python src/state_tracker.py
 - [ ] Task 9: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
 - [ ] Task 10: Automated daily scraper scheduler
 - [ ] Task 11: Fully automated async scoring pipeline
+- [ ] Task 12: Phase 2 API Migration (FastAPI backend + Next.js frontend)
 
 ---
 
