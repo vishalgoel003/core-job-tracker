@@ -1,0 +1,17 @@
+services:
+  core-job-tracker:
+    container_name: core-job-tracker-app
+    image: vishalgoel003/core-job-tracker:latest
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./targets:/app/targets
+      - ./user_details:/app/user_details
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    name: app_network
+    driver: bridge

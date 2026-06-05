@@ -1,0 +1,12 @@
+venv/
+.git/
+__pycache__/
+*.pyc
+*.lock
+.vscode/
+.gemini/
+targets/
+user_details/
+config.yaml
+README.md
+AGENT.md

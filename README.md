@@ -82,6 +82,7 @@ core-job-tracker/
 ├── README.md
 ├── requirements.txt
 ├── .gitignore
+├── deploy/                      ← Docker configuration & OCI packaging scripts
 ├── src/
 │   ├── __init__.py
 │   ├── config_engine.py     ← Config loader + path resolver
@@ -198,7 +199,7 @@ Open **http://localhost:8501** in your browser.
 
 | Tab | Contents | Editable |
 |---|---|---|
-| **🎯 Active Radar** | All visible jobs not yet applied to | ✅ App (saves date) · 🚫 Skip (hides job) |
+| **🎯 Active Radar** | All visible jobs not yet applied to | ✅ App (saves date) · 🚫 Skip (hides job) · 🤖 Bulk Score |
 | **📤 Sent Applications** | All jobs with an application date | Read-only · Click 🔗 to open details |
 | **📦 Archived** | Delisted jobs (removed from live board) | Read-only · Click 🔗 to view cached JD |
 | **🚫 Skipped** | Live jobs marked as unsuitable | Uncheck 🚫 to restore to Active Radar |
@@ -211,7 +212,7 @@ Open **http://localhost:8501** in your browser.
 Opens in a new browser tab via URL routing (fully compatible with Cloudflare Tunnels).
 - `📄 Job Description` — Full rendered Markdown from the `.md` file
 - `✏️ My Notes` — Edit and save directly to the `## Notes` section of the `.md` file
-- `🤖 LLM / Resume` — Express Pipeline (1-click evaluation), scorecard editor, resume scoring, and LinkedIn gap analysis
+- `🤖 LLM / Resume` — Express Pipeline (1-click evaluation with smart hashing/caching), scorecard editor, resume scoring, and LinkedIn gap analysis
 
 ---
 
@@ -257,6 +258,36 @@ python src/state_tracker.py
 
 ---
 
+## Docker Deployment (Local & OCI)
+
+The tracker can be fully Dockerized for both local testing and remote OCI deployment. The Docker setup lives in the `deploy/` folder and allows you to map your locally fetched data as external volumes, preventing data center IPs from getting banned by Workday's WAF.
+
+### Workflow A: Local Testing
+Builds the image from source and maps your local data into the container:
+```bash
+cd deploy
+docker compose up --build -d
+```
+Access the app at `http://localhost:8501`. Any changes made in the UI will write back to your local `targets/` folder.
+
+### Workflow B: Production OCI Deployment (Native Build)
+Because cross-compiling Python packages for ARM64 on a Windows machine can be extremely slow and error-prone, the best approach is to package the source code and build the image natively on your OCI server. You don't even need a Docker Hub account!
+
+1. **Package Everything (Source + Data):**
+```bash
+bash deploy/package.sh
+```
+This generates a `release.zip` in your project root containing your application source code, Docker configs, and your local state data (`targets/`, `config.yaml`).
+
+2. **Deploy and Build:**
+`scp release.zip` to your OCI Ubuntu instance, unzip it, and run the generated script:
+```bash
+bash unpack_and_run.sh
+```
+The script will natively build the ARM64 image using your OCI server's hardware (which is incredibly fast and reliable) and launch the application.
+
+---
+
 ## Roadmap
 
 - [x] Task 1: Config Engine
@@ -267,10 +298,11 @@ python src/state_tracker.py
 - [x] Task 6: LLM Scoring Pipeline (Scorecard + Resume Eval + Gap Analysis)
 - [x] Task 7: Parallel multi-company scraping
 - [x] Task 8: LLM `--debug` matrix mode — force-test all models × providers × stages to generate a success-rate matrix. Implement JSON-mode fallback extractor to handle strict-mode 400 errors from providers like Groq.
-- [ ] Task 9: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
-- [ ] Task 10: Automated daily scraper scheduler
-- [ ] Task 11: Fully automated async scoring pipeline
-- [ ] Task 12: Phase 2 API Migration (FastAPI backend + Next.js frontend)
+- [x] Task 9: Native Dockerization & OCI remote packaging strategy
+- [ ] Task 10: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
+- [ ] Task 11: Automated daily scraper scheduler
+- [ ] Task 12: Fully automated async scoring pipeline
+- [ ] Task 13: Phase 2 API Migration (FastAPI backend + Next.js frontend)
 
 ---
 
