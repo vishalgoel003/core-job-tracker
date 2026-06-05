@@ -325,7 +325,7 @@ def generate_scorecard(
             return False
         return True
 
-    raw_text, used_provider = llm_client.call_llm(
+    raw_text, used_provider, used_model = llm_client.call_llm(
         providers=providers,
         system_prompt=SCORECARD_SYSTEM_PROMPT,
         user_prompt=jd_text,
@@ -344,6 +344,12 @@ def generate_scorecard(
         print("  [SCORER] Failed to parse scorecard JSON from LLM response.")
         print(f"           Raw text (first 300 chars): {raw_text[:300]}")
         return None
+
+    # Inject metadata
+    scorecard["_meta"] = {
+        "provider": used_provider.name if used_provider else "unknown",
+        "model": used_model or "unknown"
+    }
 
     # Validate essential structure
     if "pillars" not in scorecard:
@@ -394,7 +400,7 @@ def evaluate_resume(
         f"```json\n{json.dumps(scorecard, indent=2)}\n```"
     )
 
-    raw_text, used_provider = llm_client.call_llm(
+    raw_text, used_provider, used_model = llm_client.call_llm(
         providers=providers,
         system_prompt=EVALUATION_SYSTEM_PROMPT,
         user_prompt=user_prompt,
@@ -411,6 +417,12 @@ def evaluate_resume(
     if not result:
         print("  [SCORER] Failed to parse evaluation JSON from LLM response.")
         return None
+
+    # Inject metadata
+    result["_meta"] = {
+        "provider": used_provider.name if used_provider else "unknown",
+        "model": used_model or "unknown"
+    }
 
     # Post-process: clamp relevance
     relevance = result.get("relevance", 0)
@@ -460,7 +472,7 @@ def check_linkedin_gaps(
         f"{linkedin_data}"
     )
 
-    raw_text, used_provider = llm_client.call_llm(
+    raw_text, used_provider, used_model = llm_client.call_llm(
         providers=providers,
         system_prompt=GAP_ANALYSIS_SYSTEM_PROMPT,
         user_prompt=user_prompt,
@@ -477,6 +489,12 @@ def check_linkedin_gaps(
     if not result:
         print("  [SCORER] Failed to parse gap analysis JSON from LLM response.")
         return None
+
+    # Inject metadata
+    result["_meta"] = {
+        "provider": used_provider.name if used_provider else "unknown",
+        "model": used_model or "unknown"
+    }
 
     # Ensure expected keys exist
     if "coverable" not in result:
@@ -544,7 +562,7 @@ def aggregate_and_analyze_gaps(
         f"{linkedin_data}"
     )
 
-    raw_text, used_provider = llm_client.call_llm(
+    raw_text, used_provider, used_model = llm_client.call_llm(
         providers=providers,
         system_prompt=GLOBAL_INSIGHTS_SYSTEM_PROMPT,
         user_prompt=user_prompt,
@@ -561,6 +579,12 @@ def aggregate_and_analyze_gaps(
     if not result:
         print("  [SCORER] Failed to parse Global Insights JSON from LLM response.")
         return None
+
+    # Inject metadata
+    result["_meta"] = {
+        "provider": used_provider.name if used_provider else "unknown",
+        "model": used_model or "unknown"
+    }
 
     # Ensure expected keys exist
     if "quick_wins" not in result:
@@ -715,6 +739,7 @@ def score_job(
             "resume_version": str(resume_path),
             "resume_hash": resume_hash,
             "shortcomings": shortcomings,
+            "_meta": evaluation.get("_meta", {})
         }
         shortcomings_path.write_text(
             json.dumps(shortcomings_data, indent=2, ensure_ascii=False),
@@ -731,6 +756,7 @@ def score_job(
                 "evaluated_at": shortcomings_data["evaluated_at"],
                 "resume_hash": resume_hash,
                 "shortcomings": shortcomings,
+                "_meta": evaluation.get("_meta", {})
             }
             _update_ledger(ledger_path, ledger_entry)
         except Exception as e:

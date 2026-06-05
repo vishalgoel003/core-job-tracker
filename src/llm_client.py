@@ -526,10 +526,10 @@ def call_llm(
     stage_params: StageParams | None = None,
     json_mode: bool = True,
     validator_fn: Callable[[str], bool] | None = None,
-) -> tuple[str | None, ProviderConfig | None]:
+) -> tuple[str | None, ProviderConfig | None, str | None]:
     """
     Try LLM providers in model-first cascade order.
-    Returns (response_text, used_provider) or (None, None) on total failure.
+    Returns (response_text, used_provider, used_model) or (None, None, None) on total failure.
 
     Cascade algorithm:
       1. Determine ordered model list from stage_params.models.
@@ -549,7 +549,7 @@ def call_llm(
     """
     if not providers:
         print("  [LLM] No providers configured. Check config.yaml llm.providers section.")
-        return None, None
+        return None, None, None
 
     params = stage_params or StageParams()
     temperature = params.temperature
@@ -692,7 +692,7 @@ def call_llm(
                                     continue
 
                                 print(f"  [LLM] JSON-mode fallback success from {provider.name} ({model}) — {len(retry_text)} chars")
-                                return retry_text, provider
+                                return retry_text, provider, model
 
                         print(f"  [LLM] {provider.name} retry also failed (HTTP {retry_resp.status_code}). Moving on.")
                         continue
@@ -718,10 +718,10 @@ def call_llm(
                         continue
 
                 print(f"  [LLM] Success from {provider.name} ({model}) — {len(text)} chars")
-                return text, provider
+                return text, provider, model
 
     print("  [LLM] All models × providers × keys exhausted. No response obtained.")
-    return None, None
+    return None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -752,7 +752,7 @@ def main() -> None:
 
     # Try a trivial JSON extraction prompt
     test_prompt = 'Respond with exactly this JSON: {"status": "ok", "provider": "your_name"}'
-    text, used = call_llm(
+    text, used_provider, used_model = call_llm(
         providers,
         system_prompt="You are a test assistant. Return only valid JSON.",
         user_prompt=test_prompt,
