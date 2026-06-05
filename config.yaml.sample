@@ -156,6 +156,19 @@ llm:
         - "openai/gpt-oss-120b:free"  # OpenRouter — 120B fallback
         - "gpt-oss-120b"              # Cerebras — 120B fallback
         - "meta-llama/llama-4-scout-17b-16e-instruct"  # Groq — Llama fallback
+    global_insights:
+      temperature: 0.10               # Low for factual matching and structured output
+      max_tokens: 4000                # Bumped to 4000 to prevent JSON truncation on huge cluster lists
+      models:
+        - "openai/gpt-oss-120b"       # Tier 1: 120B Dense (Groq)
+        - "openai/gpt-oss-120b:free"  # Tier 1: 120B (OpenRouter)
+        - "gpt-oss-120b"              # Tier 1: 120B (Cerebras)
+        - "gemini-2.5-flash"          # Tier 2: Massive context & reasoning. Safe to use here because RPD limits won't be exhausted.
+        - "qwen/qwen3-next-80b-a3b-instruct:free"      # Tier 3: High quality 80B
+        - "qwen/qwen3-32b"            # Tier 4: Reliable mid-size
+        - "gemma-4-31b-it"            
+        - "google/gemma-4-31b-it:free"   
+        - "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # ── User Profile Paths ──────────────────────────────────────────────────────
 # Used by the LLM scoring pipeline to evaluate resume against job scorecards.

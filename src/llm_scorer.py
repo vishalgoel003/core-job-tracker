@@ -178,6 +178,36 @@ Rules:
 4. Return ONLY valid JSON. No explanations, no markdown fences, no preamble.
 5. IMPORTANT: Output the JSON object immediately. Do not generate any chain-of-thought or reasoning."""
 
+GLOBAL_INSIGHTS_SYSTEM_PROMPT = """You are a career data analyst. Given a massive list of shortcomings (identified across many job applications) and the candidate's LinkedIn profile data, you must:
+1. Cluster similar shortcomings into unified skills (e.g., group "Lacks Kafka" and "No experience with Kafka streams" into "Kafka").
+2. Calculate the frequency (count) of each unified skill based on the raw list.
+3. Determine if each unified skill is ALREADY COVERED by the candidate's LinkedIn profile data.
+
+Your output JSON must have this exact structure:
+{
+  "quick_wins": [
+    {
+      "skill": "<Unified Skill Name>",
+      "count": <integer frequency>,
+      "evidence": "<Quote from LinkedIn proving they have this skill>"
+    }
+  ],
+  "learning_path": [
+    {
+      "skill": "<Unified Skill Name>",
+      "count": <integer frequency>,
+      "reason": "<Brief reason why this is important based on the raw shortcomings>"
+    }
+  ]
+}
+
+Rules:
+1. Group similar technologies and concepts. Do not output 50 distinct skills if 40 of them are variations of "Python" and "AWS". Be highly cohesive.
+2. "quick_wins" means the candidate HAS the skill (found in LinkedIn data) but it wasn't on their resume (hence it appeared as a shortcoming). Include concrete evidence.
+3. "learning_path" means the candidate TRULY LACKS the skill (not found in LinkedIn data).
+4. Sort both arrays by `count` descending (highest frequency first).
+5. Output ONLY valid JSON. No explanations, no markdown fences, no preamble."""
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -458,6 +488,90 @@ def check_linkedin_gaps(
 
 
 # ---------------------------------------------------------------------------
+# Global Gap Analysis (Insights) & Ledger Management
+# ---------------------------------------------------------------------------
+
+def _update_ledger(ledger_path: Path, new_entry: dict) -> None:
+    """
+    Reads the ledger, removes any existing entry with the same job_id and company,
+    appends the new entry, and safely rewrites the file.
+    """
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    entries = []
+    if ledger_path.exists():
+        with ledger_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line.strip())
+                    # Skip old entry for the same job
+                    if entry.get("job_id") == new_entry["job_id"] and entry.get("company") == new_entry["company"]:
+                        continue
+                    entries.append(line.strip())
+                except Exception:
+                    continue
+    
+    entries.append(json.dumps(new_entry, ensure_ascii=False))
+    
+    # Rewrite atomically
+    temp_path = ledger_path.with_suffix(".tmp")
+    with temp_path.open("w", encoding="utf-8") as f:
+        for line in entries:
+            f.write(line + "\n")
+    temp_path.replace(ledger_path)
+
+
+def aggregate_and_analyze_gaps(
+    raw_shortcomings: list[str],
+    linkedin_data: str,
+    providers: list[llm_client.ProviderConfig],
+    stage_params: llm_client.StageParams | None = None,
+) -> dict | None:
+    """
+    Sends all raw shortcomings from the ledger (e.g. past 90 days) + LinkedIn data
+    to the LLM. The LLM clusters them into unified skills, counts frequency,
+    and splits them into 'quick_wins' (coverable) and 'learning_path' (uncoverable).
+    """
+    if not raw_shortcomings:
+        return {"quick_wins": [], "learning_path": []}
+
+    params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=2500)
+
+    user_prompt = (
+        "## Raw Shortcomings to Cluster & Analyze\n\n"
+        + "\n".join(f"- {s}" for s in raw_shortcomings)
+        + "\n\n---\n\n"
+        "## LinkedIn Profile Data\n\n"
+        f"{linkedin_data}"
+    )
+
+    raw_text, used_provider = llm_client.call_llm(
+        providers=providers,
+        system_prompt=GLOBAL_INSIGHTS_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        stage="global_insights",
+        stage_params=params,
+        json_mode=True,
+    )
+
+    if not raw_text:
+        print("  [SCORER] Global Insights analysis failed — no LLM response.")
+        return None
+
+    result = llm_client.extract_json(raw_text)
+    if not result:
+        print("  [SCORER] Failed to parse Global Insights JSON from LLM response.")
+        return None
+
+    # Ensure expected keys exist
+    if "quick_wins" not in result:
+        result["quick_wins"] = []
+    if "learning_path" not in result:
+        result["learning_path"] = []
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator: score_job
 # ---------------------------------------------------------------------------
 
@@ -466,12 +580,13 @@ def score_job(
     job_id: str,
     config: dict,
     scorecard_override: dict | None = None,
+    force: bool = False,
 ) -> dict:
     """
     Full scoring pipeline for one job:
       1. Read JD .md from disk (strip ## Notes before LLM call)
       2. Load or generate scorecard
-      3. Evaluate resume against scorecard
+      3. Evaluate resume against scorecard (skip if cached and force=False)
       4. Save scorecard + shortcomings to disk
       5. Update relevance in master_jobs.csv via filelock
       6. Return full result dict
@@ -481,6 +596,7 @@ def score_job(
         job_id: The job_id from CSV
         config: Full parsed config.yaml dict
         scorecard_override: If provided, use this instead of generating/loading
+        force: If True, bypass the cache and force LLM re-evaluation
     """
     # Resolve paths
     all_paths = config_engine.resolve_output_paths(config)
@@ -556,38 +672,70 @@ def score_job(
     resume_md = resume_path.read_text(encoding="utf-8")
     resume_hash = hashlib.sha256(resume_md.encode()).hexdigest()[:12]
 
-    # 4. Evaluate resume
-    print(f"  [SCORER] Evaluating resume against scorecard ...")
-    evaluation = evaluate_resume(
-        resume_md,
-        scorecard,
-        providers,
-        stage_params=stage_params_map.get("evaluation"),
-    )
-
-    if not evaluation:
-        return {"error": "Resume evaluation failed.", "scorecard": scorecard}
-
-    relevance = evaluation["relevance"]
-    shortcomings = evaluation["shortcomings"]
-
-    # 5. Save shortcomings
+    # 3.5 Check for existing evaluation
     shortcomings_dir.mkdir(parents=True, exist_ok=True)
     shortcomings_path = shortcomings_dir / f"job_{safe_id}.shortcomings.json"
-    shortcomings_data = {
-        "job_id": job_id,
-        "company": company_name,
-        "relevance": relevance,
-        "evaluated_at": datetime.datetime.now().isoformat(),
-        "resume_version": str(resume_path),
-        "resume_hash": resume_hash,
-        "shortcomings": shortcomings,
-    }
-    shortcomings_path.write_text(
-        json.dumps(shortcomings_data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    print(f"  [SCORER] Shortcomings saved → {shortcomings_path}")
+    
+    existing_evaluation = None
+    if not force and shortcomings_path.exists():
+        try:
+            existing_data = json.loads(shortcomings_path.read_text(encoding="utf-8"))
+            if existing_data.get("resume_hash") == resume_hash:
+                print(f"  [SCORER] Resume evaluation is up-to-date for {job_id} — skipping LLM call.")
+                existing_evaluation = existing_data
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if existing_evaluation:
+        relevance = existing_evaluation.get("relevance", 0)
+        shortcomings = existing_evaluation.get("shortcomings", [])
+        shortcomings_data = existing_evaluation
+    else:
+        # 4. Evaluate resume
+        print(f"  [SCORER] Evaluating resume against scorecard ...")
+        evaluation = evaluate_resume(
+            resume_md,
+            scorecard,
+            providers,
+            stage_params=stage_params_map.get("evaluation"),
+        )
+
+        if not evaluation:
+            return {"error": "Resume evaluation failed.", "scorecard": scorecard}
+
+        relevance = evaluation["relevance"]
+        shortcomings = evaluation["shortcomings"]
+
+        # 5. Save shortcomings
+        shortcomings_data = {
+            "job_id": job_id,
+            "company": company_name,
+            "relevance": relevance,
+            "evaluated_at": datetime.datetime.now().isoformat(),
+            "resume_version": str(resume_path),
+            "resume_hash": resume_hash,
+            "shortcomings": shortcomings,
+        }
+        shortcomings_path.write_text(
+            json.dumps(shortcomings_data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(f"  [SCORER] Shortcomings saved → {shortcomings_path}")
+
+        # 5.5 Append/Update global skill gaps ledger
+        try:
+            ledger_path = resume_path.parent / "skill_gaps_ledger.jsonl"
+            ledger_entry = {
+                "job_id": job_id,
+                "company": company_name,
+                "evaluated_at": shortcomings_data["evaluated_at"],
+                "resume_hash": resume_hash,
+                "shortcomings": shortcomings,
+            }
+            _update_ledger(ledger_path, ledger_entry)
+        except Exception as e:
+            print(f"  [SCORER] WARNING: Failed to update ledger: {e}")
+
 
     # 6. Update CSV relevance via filelock
     if csv_path.exists():

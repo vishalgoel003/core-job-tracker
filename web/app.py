@@ -20,6 +20,7 @@ import subprocess
 import sys
 import os
 import json
+import hashlib
 from pathlib import Path
 
 # Path injection — allows `import src.config_engine` from the project root
@@ -297,8 +298,6 @@ def render_job_detail_page(company: str, job_id: str) -> None:
     Opens in a new browser tab; safe behind Cloudflare Tunnel (relative URLs).
     Never calls load_all_jobs() — reads only the files for this one job.
     """
-    import hashlib
-
     config    = config_engine.load_config("config.yaml")
     all_paths = config_engine.resolve_output_paths(config)
     path_map  = {p["name"]: p for p in all_paths}
@@ -657,6 +656,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                     result = llm_scorer.score_job(
                         company, job_id, config,
                         scorecard_override=scorecard_data,
+                        force=True,
                     )
                     if "error" in result:
                         st.error(f"❌ {result['error']}")
@@ -769,6 +769,7 @@ def main() -> None:
 
         st.divider()
         deadline_window = st.slider("⏰ Deadline alert window (days)", 1, 30, 7)
+        limit_rows = st.number_input("🎯 Limit Active Radar rows", min_value=0, max_value=5000, value=0, step=10, help="0 means no limit")
 
         st.divider()
         # ── Run Scraper button ───────────────────────────────────────────────
@@ -845,6 +846,8 @@ def main() -> None:
         ],
         sort1, sort2,
     )
+    if limit_rows > 0:
+        active_df = active_df.head(limit_rows)
     sent_df     = _apply_sort(
         base[base["applied"].apply(_is_applied)],
         sort1, sort2,
@@ -881,11 +884,12 @@ def main() -> None:
     m4.metric("🏢 Companies", len(company_filter))
 
     # ── Tabs ────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         f"🎯 Active Radar  ({len(active_df)})",
         f"📤 Sent Applications  ({len(sent_df)})",
         f"📦 Archived  ({len(archived_df)})",
         f"🚫 Skipped  ({len(skipped_df)})",
+        "🧠 Insights & Growth",
     ])
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -895,8 +899,9 @@ def main() -> None:
         if active_df.empty:
             st.info("No active jobs match your filters. Try broadening your search.")
         else:
+            select_all = st.checkbox("☑️ Select All Visible", key="select_all_t1")
             t1_source = active_df[_ACTIVE_BASE[1:]].copy().reset_index(drop=True)
-            t1_source.insert(0, "selected", False)
+            t1_source.insert(0, "selected", select_all)
 
             with st.form("tab1_bulk_form"):
                 edited = st.data_editor(
@@ -1087,6 +1092,121 @@ def main() -> None:
                         })
                 if changes:
                     _write_back(changes)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # TAB 5 — Insights & Growth
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with tab5:
+        st.markdown("### 🧠 Career Insights & Growth Hub")
+        st.caption("Aggregates all job shortcomings from the last 90 days to identify your highest-ROI resume updates and learning goals.")
+
+        # 1. Read the ledger
+        config = config_engine.load_config("config.yaml")
+        profile_cfg = config.get("user_profile") or {}
+        resume_path = Path(profile_cfg.get("resume_path", "user_details/resume.md"))
+        user_details_dir = resume_path.parent
+        ledger_path = user_details_dir / "skill_gaps_ledger.jsonl"
+        cache_path = user_details_dir / "global_insights_cache.json"
+
+        # Calculate dates
+        ninety_days_ago = datetime.date.today() - datetime.timedelta(days=90)
+        
+        raw_shortcomings = []
+        if ledger_path.exists():
+            with ledger_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line.strip())
+                        eval_date_str = entry.get("evaluated_at", "")
+                        if eval_date_str:
+                            eval_date = datetime.datetime.fromisoformat(eval_date_str).date()
+                            if eval_date >= ninety_days_ago:
+                                raw_shortcomings.extend(entry.get("shortcomings", []))
+                    except Exception:
+                        continue
+
+        if not raw_shortcomings:
+            st.info("No shortcomings found in the last 90 days. Run the scraper and score some jobs to build your insights ledger!")
+        else:
+            st.write(f"📊 **Data Source:** {len(raw_shortcomings)} shortcomings identified across recent job evaluations.")
+
+            # Compute current hashes
+            linkedin_data = llm_scorer._read_linkedin_data(config)
+            current_content_hash = hashlib.sha256(linkedin_data.encode()).hexdigest()[:12] if linkedin_data else ""
+            ledger_text = "".join(sorted(raw_shortcomings))
+            current_ledger_hash = hashlib.sha256(ledger_text.encode()).hexdigest()[:12]
+
+            # Load Cache
+            cache_data = None
+            cache_is_valid = False
+            if cache_path.exists():
+                try:
+                    cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+                    if cache_data.get("ledger_hash") == current_ledger_hash and cache_data.get("content_hash") == current_content_hash:
+                        cache_is_valid = True
+                except Exception:
+                    pass
+
+            # Display Cache
+            if cache_data and "quick_wins" in cache_data and "learning_path" in cache_data:
+                st.caption(f"Last analyzed: {cache_data.get('last_run_date', 'Unknown')[:19]}")
+                
+                col_qw, col_lp = st.columns(2)
+                
+                with col_qw:
+                    st.markdown("#### ⚡ Quick Wins (Resume Updates)")
+                    st.info("You already possess these skills based on your LinkedIn data. **Add them to your resume immediately** to boost your match scores.")
+                    quick_wins = cache_data["quick_wins"]
+                    if not quick_wins:
+                        st.success("No quick wins found. Your resume is well-aligned with your LinkedIn profile!")
+                    for item in quick_wins:
+                        with st.expander(f"**{item.get('skill', '')}** (Required by {item.get('count', 0)} jobs)", expanded=True):
+                            st.write(f"**Evidence:** {item.get('evidence', '')}")
+
+                with col_lp:
+                    st.markdown("#### 📚 Learning Path (True Gaps)")
+                    st.warning("You truly lack these skills. Focus your learning and side-projects here to maximize your employability.")
+                    learning_path = cache_data["learning_path"]
+                    if not learning_path:
+                        st.success("No learning gaps found. You are highly qualified!")
+                    for item in learning_path:
+                        with st.expander(f"**{item.get('skill', '')}** (Required by {item.get('count', 0)} jobs)", expanded=True):
+                            st.write(f"**Context:** {item.get('reason', '')}")
+
+            # Run Analysis Button
+            providers, stage_params_map = llm_client.load_llm_config(config)
+            has_providers = len(providers) > 0
+
+            if not has_providers:
+                st.warning("⚠️ No LLM providers configured. Add api_key to config.yaml to run Insights.")
+            else:
+                if cache_is_valid:
+                    st.success("✅ Insights are up-to-date with your latest ledger and LinkedIn data.")
+                else:
+                    st.info("🔄 Your ledger or LinkedIn data has changed. Run a new analysis to update your insights!")
+                
+                btn_label = "🔄 Re-run Analysis" if cache_data else "🚀 Run Initial Analysis"
+                if st.button(btn_label, type="primary" if not cache_is_valid else "secondary"):
+                    with st.spinner("Clustering shortcomings and analyzing coverage... this may take a moment."):
+                        result = llm_scorer.aggregate_and_analyze_gaps(
+                            raw_shortcomings,
+                            linkedin_data,
+                            providers,
+                            stage_params=stage_params_map.get("global_insights")
+                        )
+                        if result:
+                            cache_payload = {
+                                "last_run_date": datetime.datetime.now().isoformat(),
+                                "ledger_hash": current_ledger_hash,
+                                "content_hash": current_content_hash,
+                                "quick_wins": result.get("quick_wins", []),
+                                "learning_path": result.get("learning_path", [])
+                            }
+                            cache_path.write_text(json.dumps(cache_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                            st.success("✅ Insights updated!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to generate insights. Check console logs.")
 
 
 # ---------------------------------------------------------------------------
