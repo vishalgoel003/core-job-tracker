@@ -4,14 +4,14 @@ llm_scorer.py — LLM Scoring Pipeline (Scorecard Generation + Resume Evaluation
 Two-pass architecture:
   Pass 1: Job Description → LLM → Scorecard JSON    (what does this job need?)
   Pass 2: Resume + Scorecard → LLM → Score + Gaps   (how well do I match?)
-  Pass 3: Shortcomings + LinkedIn → LLM → Gap Report (can I cover the gaps?)
+  Pass 3: Shortcomings + Supplementary Data → LLM → Gap Report (can I cover the gaps?)
 
 CLI-first design — all functions work standalone. The Streamlit UI wraps them.
 
 Usage:
     python src/llm_scorer.py                                    # Score all unscored jobs
     python src/llm_scorer.py --job JR-0000105811 --company Barclays  # Score one job
-    python src/llm_scorer.py --gap-check JR-0000105811 --company Barclays  # LinkedIn gap check
+    python src/llm_scorer.py --gap-check JR-0000105811 --company Barclays  # Supplementary gap check
 
 AGENT.md compliance:
   [TECH-1.5]  LLM calls via requests. No SDK dependencies.
@@ -153,33 +153,62 @@ Rules:
 5. Consider hard_filters: if the candidate clearly fails a hard filter (e.g., min YoE), reduce score significantly.
 6. Return ONLY valid JSON. No explanations, no markdown fences, no preamble."""
 
-GAP_ANALYSIS_SYSTEM_PROMPT = """You are a career data analyst. Given a list of shortcomings from a job evaluation and the candidate's LinkedIn profile data, determine which gaps can be covered by information in the LinkedIn data.
+GAP_ANALYSIS_SYSTEM_PROMPT = """You are a career data analyst. Given a list of shortcomings from a job evaluation and the candidate's Supplementary Data, determine which gaps can be covered by information in the Supplementary Data.
 
 Your output JSON must have this exact structure:
 {
   "coverable": [
     {
       "gap": "<the shortcoming text>",
-      "evidence": "<specific data from LinkedIn that covers this gap>",
-      "source_file": "<which CSV file contained the evidence>"
+      "evidence": "<specific data from Supplementary Data that covers this gap>",
+      "source_file": "<which file contained the evidence>"
     }
   ],
   "uncoverable": [
-    "<shortcoming that has no evidence in LinkedIn data>"
+    "<shortcoming that has no evidence in Supplementary data>"
   ]
 }
 
 Rules:
-1. Only list a gap as "coverable" if there is CONCRETE evidence in the LinkedIn data.
+1. Only list a gap as "coverable" if there is CONCRETE evidence in the Supplementary Data.
 2. Quote specific entries, project names, skill names, or position descriptions as evidence.
 3. If a gap is partially coverable, include it in "coverable" with honest evidence.
 4. Return ONLY valid JSON. No explanations, no markdown fences, no preamble.
 5. IMPORTANT: Output the JSON object immediately. Do not generate any chain-of-thought or reasoning."""
 
-GLOBAL_INSIGHTS_SYSTEM_PROMPT = """You are a career data analyst. Given a massive list of shortcomings (identified across many job applications) and the candidate's LinkedIn profile data, you must:
+CLUSTER_CHUNK_SYSTEM_PROMPT = """You are a career data analyst. Given a list of shortcomings identified across job applications, you must:
 1. Cluster similar shortcomings into unified skills (e.g., group "Lacks Kafka" and "No experience with Kafka streams" into "Kafka").
 2. Calculate the frequency (count) of each unified skill based on the raw list.
-3. Determine if each unified skill is ALREADY COVERED by the candidate's LinkedIn profile data.
+
+Your output JSON must have this exact structure:
+[
+  {
+    "skill": "<Unified Skill Name>",
+    "count": <integer frequency>
+  }
+]
+
+Rules:
+1. Group similar technologies and concepts cohesively.
+2. Output ONLY valid JSON. No explanations, no markdown fences."""
+
+MERGE_CLUSTERS_SYSTEM_PROMPT = """You are a career data analyst. Given multiple JSON lists of missing skills and their counts, merge them into a single unified list.
+
+Your output JSON must have this exact structure:
+[
+  {
+    "skill": "<Unified Skill Name>",
+    "count": <total integer frequency>
+  }
+]
+
+Rules:
+1. Merge skills that mean the exact same thing (e.g., "AWS Cloud" and "Amazon Web Services").
+2. Sort the final array by `count` descending.
+3. Output ONLY valid JSON. No explanations, no markdown fences.
+4. CRITICAL: Your output MUST be a flat JSON array of objects. Do NOT nest objects or wrap the array in a dictionary."""
+
+GAP_FILL_SYSTEM_PROMPT = """You are a career data analyst. Given a list of clustered shortcomings (skills missing from the candidate's resume) and the candidate's Supplementary Data, determine if the candidate actually possesses these skills.
 
 Your output JSON must have this exact structure:
 {
@@ -187,24 +216,24 @@ Your output JSON must have this exact structure:
     {
       "skill": "<Unified Skill Name>",
       "count": <integer frequency>,
-      "evidence": "<Quote from LinkedIn proving they have this skill>"
+      "evidence": "<Quote from Supplementary Data proving they have this skill>"
     }
   ],
   "learning_path": [
     {
       "skill": "<Unified Skill Name>",
       "count": <integer frequency>,
-      "reason": "<Brief reason why this is important based on the raw shortcomings>"
+      "reason": "<Brief reason why this is important>"
     }
   ]
 }
 
 Rules:
-1. Group similar technologies and concepts. Do not output 50 distinct skills if 40 of them are variations of "Python" and "AWS". Be highly cohesive.
-2. "quick_wins" means the candidate HAS the skill (found in LinkedIn data) but it wasn't on their resume (hence it appeared as a shortcoming). Include concrete evidence.
-3. "learning_path" means the candidate TRULY LACKS the skill (not found in LinkedIn data).
-4. Sort both arrays by `count` descending (highest frequency first).
-5. Output ONLY valid JSON. No explanations, no markdown fences, no preamble."""
+1. "quick_wins" means the candidate HAS the skill (found in Supplementary Data). Include concrete evidence.
+2. "learning_path" means the candidate TRULY LACKS the skill (not found in Supplementary Data).
+3. Sort both arrays by `count` descending.
+4. Output ONLY valid JSON. No explanations, no markdown fences.
+5. CRITICAL: You must ONLY evaluate the exact skills provided in the input JSON. DO NOT invent or extract any other skills from the Supplementary Data."""
 
 
 # ---------------------------------------------------------------------------
@@ -270,18 +299,30 @@ def _normalize_weights(scorecard: dict) -> dict:
     return scorecard
 
 
-def _read_linkedin_data(config: dict) -> str:
+def _read_supplementary_data(config: dict) -> str:
     """
-    Read and concatenate relevant LinkedIn CSV files into a single text block.
+    Read and concatenate relevant Supplementary CSV files and custom_notes.md into a single text block.
     Each file's content is prefixed with its filename for source attribution.
     """
     profile_cfg = config.get("user_profile") or {}
-    linkedin_dir = Path(profile_cfg.get("linkedin_dir", "user_details/Basic_LinkedInDataExport"))
-    linkedin_files = profile_cfg.get("linkedin_files") or []
+    supplementary_dir = Path(profile_cfg.get("supplementary_dir", "user_details/SupplementaryData"))
+    supplementary_files = profile_cfg.get("supplementary_files") or []
+    custom_notes_path = Path(profile_cfg.get("custom_notes_path", "user_details/custom_notes.md"))
 
     parts: list[str] = []
-    for filename in linkedin_files:
-        filepath = linkedin_dir / filename
+    
+    # Read custom_notes.md first
+    if custom_notes_path.exists():
+        try:
+            content = custom_notes_path.read_text(encoding="utf-8").strip()
+            if content:
+                parts.append(f"=== {custom_notes_path.name} ===\n{content}")
+        except Exception:
+            pass
+
+    # Read Supplementary CSVs
+    for filename in supplementary_files:
+        filepath = supplementary_dir / filename
         if filepath.exists():
             try:
                 content = filepath.read_text(encoding="utf-8").strip()
@@ -395,7 +436,7 @@ def evaluate_resume(
         f"{resume_md}\n\n"
         "---\n\n"
         "## Job Scorecard\n\n"
-        f"```json\n{json.dumps(scorecard, indent=2)}\n```"
+        f"```json\n{json.dumps(scorecard, separators=(',', ':'))}\n```"
     )
 
     raw_text, used_provider, used_model = llm_client.call_llm(
@@ -441,34 +482,35 @@ def evaluate_resume(
 
 
 # ---------------------------------------------------------------------------
-# Pass 3: LinkedIn Gap Analysis
+# Pass 3: Supplementary Gap Analysis
 # ---------------------------------------------------------------------------
 
-def check_linkedin_gaps(
+def check_supplementary_gaps(
     shortcomings: list[str],
-    linkedin_data: str,
+    supplementary_data: str,
     providers: list[llm_client.ProviderConfig],
     stage_params: llm_client.StageParams | None = None,
 ) -> dict | None:
     """
-    Send shortcomings + LinkedIn data to LLM to identify coverable gaps.
+    Send shortcomings + Supplementary data to LLM to identify coverable gaps.
 
     Returns {"coverable": [...], "uncoverable": [...]}, or None on failure.
     """
     if not shortcomings:
         return {"coverable": [], "uncoverable": []}
 
-    if not linkedin_data.strip():
+    supplementary_data = _read_supplementary_data(config)
+    if not supplementary_data.strip():
         return {"coverable": [], "uncoverable": shortcomings}
 
     params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=1200)
 
     user_prompt = (
-        "## Shortcomings to Check\n\n"
+        "## Shortcomings\n\n"
         + "\n".join(f"- {s}" for s in shortcomings)
         + "\n\n---\n\n"
-        "## LinkedIn Profile Data\n\n"
-        f"{linkedin_data}"
+        "## Supplementary Data\n\n"
+        f"{supplementary_data}"
     )
 
     raw_text, used_provider, used_model = llm_client.call_llm(
@@ -538,65 +580,208 @@ def _update_ledger(ledger_path: Path, new_entry: dict) -> None:
     temp_path.replace(ledger_path)
 
 
-def aggregate_and_analyze_gaps(
-    raw_shortcomings: list[str],
-    linkedin_data: str,
+def _cluster_shortcomings_chunk(
+    chunk: list[str],
     providers: list[llm_client.ProviderConfig],
-    stage_params: llm_client.StageParams | None = None,
-) -> dict | None:
-    """
-    Sends all raw shortcomings from the ledger (e.g. past 90 days) + LinkedIn data
-    to the LLM. The LLM clusters them into unified skills, counts frequency,
-    and splits them into 'quick_wins' (coverable) and 'learning_path' (uncoverable).
-    """
-    if not raw_shortcomings:
-        return {"quick_wins": [], "learning_path": []}
-
-    params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=2500)
-
-    user_prompt = (
-        "## Raw Shortcomings to Cluster & Analyze\n\n"
-        + "\n".join(f"- {s}" for s in raw_shortcomings)
-        + "\n\n---\n\n"
-        "## LinkedIn Profile Data\n\n"
-        f"{linkedin_data}"
-    )
-
+    stage_params: llm_client.StageParams | None = None
+) -> list[dict] | None:
+    """Pass 1: Map raw shortcomings to a basic clustered list."""
+    if not chunk:
+        return []
+    
+    params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=1500)
+    user_prompt = "## Raw Shortcomings to Cluster\n\n" + "\n".join(f"- {s}" for s in chunk)
+    
     raw_text, used_provider, used_model = llm_client.call_llm(
         providers=providers,
-        system_prompt=GLOBAL_INSIGHTS_SYSTEM_PROMPT,
+        system_prompt=CLUSTER_CHUNK_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         stage="global_insights",
         stage_params=params,
         json_mode=True,
         validator_fn=lambda t: llm_client.extract_json(t) is not None,
     )
-
+    
     if not raw_text:
-        print("  [SCORER] Global Insights analysis failed — no LLM response.")
         return None
+    return llm_client.extract_json(raw_text)
 
-    result = llm_client.extract_json(raw_text)
-    if not result:
-        print("  [SCORER] Failed to parse Global Insights JSON from LLM response. Raw text:")
-        print("-" * 40)
-        print(raw_text)
-        print("-" * 40)
+def _merge_clustered_skills(
+    lists_to_merge: list[list[dict]],
+    providers: list[llm_client.ProviderConfig],
+    stage_params: llm_client.StageParams | None = None
+) -> list[dict] | None:
+    """Pass 2: Reduce multiple clustered lists into one master list."""
+    if not lists_to_merge:
+        return []
+    if len(lists_to_merge) == 1:
+        return lists_to_merge[0]
+
+    params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=2500)
+    user_prompt = "## Lists to Merge\n\n"
+    for i, lst in enumerate(lists_to_merge):
+        user_prompt += f"### List {i+1}\n```json\n{json.dumps(lst, separators=(',', ':'))}\n```\n\n"
+    
+    raw_text, used_provider, used_model = llm_client.call_llm(
+        providers=providers,
+        system_prompt=MERGE_CLUSTERS_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        stage="global_insights",
+        stage_params=params,
+        json_mode=True,
+        validator_fn=lambda t: llm_client.extract_json(t) is not None,
+    )
+    
+    if not raw_text:
         return None
+    return llm_client.extract_json(raw_text)
 
-    # Inject metadata
-    result["_meta"] = {
-        "provider": used_provider.name if used_provider else "unknown",
-        "model": used_model or "unknown"
-    }
+def digest_ledger(
+    config: dict,
+    providers: list[llm_client.ProviderConfig],
+    stage_params: llm_client.StageParams | None = None
+) -> dict:
+    """
+    Reads the active ledger, chunks new shortcomings by resume_hash,
+    clusters them, merges them with the existing state in digested_insights.json,
+    and moves the processed raw entries to the archive.
+    Returns the loaded/updated digested_insights dict.
+    """
+    profile_cfg = config.get("user_profile") or {}
+    resume_path = Path(profile_cfg.get("resume_path", "user_details/resume.md"))
+    user_details_dir = resume_path.parent
+    ledger_path = user_details_dir / "skill_gaps_ledger.jsonl"
+    archive_path = user_details_dir / "skill_gaps_ledger_archive.jsonl"
+    digested_path = user_details_dir / "digested_insights.json"
+    
+    digested = {}
+    if digested_path.exists():
+        try:
+            digested = json.loads(digested_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+            
+    if not ledger_path.exists():
+        return digested
+        
+    # Read active ledger
+    new_entries_by_hash: dict[str, list[str]] = {}
+    lines_to_archive = []
+    with ledger_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                entry = json.loads(line.strip())
+                r_hash = entry.get("resume_hash", "unknown")
+                shortcomings = entry.get("shortcomings", [])
+                if r_hash not in new_entries_by_hash:
+                    new_entries_by_hash[r_hash] = []
+                new_entries_by_hash[r_hash].extend(shortcomings)
+                lines_to_archive.append(line.strip())
+            except Exception:
+                continue
+                
+    if not lines_to_archive:
+        return digested
+        
+    # Process each resume hash
+    for r_hash, shortcomings in new_entries_by_hash.items():
+        if not shortcomings:
+            continue
+            
+        # Chunking (e.g., 50 per chunk)
+        chunk_size = 50
+        chunks = [shortcomings[i:i + chunk_size] for i in range(0, len(shortcomings), chunk_size)]
+        
+        clustered_lists = []
+        for c in chunks:
+            res = _cluster_shortcomings_chunk(c, providers, stage_params)
+            if res:
+                clustered_lists.append(res)
+                
+        # Existing state
+        existing_state = digested.get(r_hash, {}).get("clustered_skills", [])
+        if existing_state:
+            clustered_lists.append(existing_state)
+            
+        # Merge
+        final_list = _merge_clustered_skills(clustered_lists, providers, stage_params) or []
+        
+        digested[r_hash] = {
+            "last_updated": datetime.datetime.now().isoformat(),
+            "clustered_skills": final_list
+        }
+        
+    # Save digested
+    digested_path.write_text(json.dumps(digested, indent=2), encoding="utf-8")
+    
+    # Archive processed lines
+    with archive_path.open("a", encoding="utf-8") as fa:
+        for line in lines_to_archive:
+            fa.write(line + "\n")
+            
+    # Clear active ledger safely
+    ledger_path.write_text("", encoding="utf-8")
+    
+    return digested
 
-    # Ensure expected keys exist
-    if "quick_wins" not in result:
-        result["quick_wins"] = []
-    if "learning_path" not in result:
-        result["learning_path"] = []
-
-    return result
+def run_gap_fill(
+    clustered_skills: list[dict],
+    config: dict,
+    providers: list[llm_client.ProviderConfig],
+    stage_params: llm_client.StageParams | None = None
+) -> dict | None:
+    """
+    Pass 3: Final Gap Fill Analysis.
+    Cross-references clustered skills against Supplementary Data.
+    """
+    if not clustered_skills:
+        return {"quick_wins": [], "learning_path": []}
+        
+    supplementary_data = _read_supplementary_data(config)
+    params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=2500)
+    
+    user_prompt = (
+        "## Clustered Missing Skills\n\n```json\n"
+        + json.dumps(clustered_skills, separators=(',', ':'))
+        + "\n```\n\n---\n\n"
+        "## Supplementary Data\n\n"
+        f"{supplementary_data}"
+    )
+    
+    raw_text, used_provider, used_model = llm_client.call_llm(
+        providers=providers,
+        system_prompt=GAP_FILL_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        stage="global_insights",
+        stage_params=params,
+        json_mode=True,
+        validator_fn=lambda t: llm_client.extract_json(t) is not None,
+    )
+    
+    if not raw_text:
+        return None
+        
+    parsed = llm_client.extract_json(raw_text)
+    if parsed:
+        # Strictly filter out hallucinated skills that were not in the input list
+        valid_skills = {item.get("skill", "").lower() for item in clustered_skills if "skill" in item}
+        
+        parsed["quick_wins"] = [
+            item for item in parsed.get("quick_wins", [])
+            if item.get("skill", "").lower() in valid_skills
+        ]
+        parsed["learning_path"] = [
+            item for item in parsed.get("learning_path", [])
+            if item.get("skill", "").lower() in valid_skills
+        ]
+        
+        parsed["_meta"] = {
+            "provider": used_provider.name if used_provider else "unknown",
+            "model": used_model or "unknown"
+        }
+        return parsed
+        
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -686,7 +871,7 @@ def score_job(
     # Save scorecard
     scorecards_dir.mkdir(parents=True, exist_ok=True)
     scorecard_path.write_text(
-        json.dumps(scorecard, indent=2, ensure_ascii=False),
+        json.dumps(scorecard, separators=(',', ':'), ensure_ascii=False),
         encoding="utf-8",
     )
     print(f"  [SCORER] Scorecard saved → {scorecard_path}")
@@ -746,7 +931,7 @@ def score_job(
             "_meta": evaluation.get("_meta", {})
         }
         shortcomings_path.write_text(
-            json.dumps(shortcomings_data, indent=2, ensure_ascii=False),
+            json.dumps(shortcomings_data, separators=(',', ':'), ensure_ascii=False),
             encoding="utf-8",
         )
         print(f"  [SCORER] Shortcomings saved → {shortcomings_path}")
@@ -900,7 +1085,7 @@ def run_debug_matrix(config: dict) -> None:
     }
     test_resume = "## Software Engineer\n- 5 years Java, Spring Boot\n- Docker, Kubernetes\n- PostgreSQL, Kafka\n"
     test_shortcomings = ["No Kafka Streams experience", "Missing CI/CD pipeline expertise"]
-    test_linkedin = "=== Skills.csv ===\nJava,Spring Boot,Kafka,Docker\n"
+    test_supplementary = "=== Skills.csv ===\nJava,Spring Boot,Kafka,Docker\n"
 
     stage_test_configs = {
         "scorecard": {
@@ -921,7 +1106,7 @@ def run_debug_matrix(config: dict) -> None:
             "user_prompt": (
                 "## Shortcomings to Check\n\n"
                 + "\n".join(f"- {s}" for s in test_shortcomings)
-                + "\n\n---\n\n## LinkedIn Profile Data\n\n" + test_linkedin
+                + "\n\n---\n\n## Supplementary Profile Data\n\n" + test_supplementary
             ),
             "validator_fn": lambda t: bool(llm_client.extract_json(t)),
         },
@@ -1079,13 +1264,13 @@ def main() -> None:
             "Examples:\n"
             "  python src/llm_scorer.py                                          # Score all unscored jobs\n"
             "  python src/llm_scorer.py --job JR-0000105811 --company Barclays    # Score one job\n"
-            "  python src/llm_scorer.py --gap-check JR-0000105811 --company Barclays  # LinkedIn gap check\n"
+            "  python src/llm_scorer.py --gap-check JR-0000105811 --company Barclays  # Supplementary gap check\n"
         ),
     )
     parser.add_argument("--job", type=str, help="Score a specific job by ID")
     parser.add_argument("--company", type=str, help="Company name (required with --job)")
     parser.add_argument("--gap-check", type=str, metavar="JOB_ID",
-                        help="Run LinkedIn gap analysis for a specific job")
+                        help="Run Supplementary gap analysis for a specific job")
     parser.add_argument("--company-filter", type=str,
                         help="Filter to a specific company in batch mode")
     parser.add_argument("--debug", action="store_true",
@@ -1106,7 +1291,7 @@ def main() -> None:
         return
 
     if args.gap_check:
-        # LinkedIn gap analysis mode
+        # Supplementary gap analysis mode
         if not args.company:
             print("[ERROR] --company is required with --gap-check")
             sys.exit(1)
@@ -1133,11 +1318,11 @@ def main() -> None:
             print("[INFO] No shortcomings to check — resume is a perfect match!")
             sys.exit(0)
 
-        linkedin_data = _read_linkedin_data(config)
         providers, stage_params_map = llm_client.load_llm_config(config)
-
-        result = check_linkedin_gaps(
-            shortcomings, linkedin_data, providers,
+        supplementary_data = _read_supplementary_data(config)
+        
+        result = check_supplementary_gaps(
+            shortcomings, supplementary_data, providers,
             stage_params=stage_params_map.get("gap_analysis"),
         )
 

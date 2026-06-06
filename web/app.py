@@ -429,7 +429,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                 gap_data = None
 
         # ── Helper: save gap analysis to disk ───────────────────────
-        def _save_gap(gap_result: dict, linkedin_hash: str = "") -> None:
+        def _save_gap(gap_result: dict, supplementary_hash: str = "") -> None:
             gap_dir  = gap_path.parent
             gap_dir.mkdir(parents=True, exist_ok=True)
             gap_payload = {
@@ -437,7 +437,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                 "company":     company,
                 "analyzed_at": datetime.date.today().isoformat(),
                 "resume_hash": current_resume_hash,
-                "linkedin_hash": linkedin_hash,
+                "supplementary_hash": supplementary_hash,
                 "coverable":   gap_result.get("coverable", []),
                 "uncoverable": gap_result.get("uncoverable", []),
                 "_meta":       gap_result.get("_meta", {})
@@ -451,16 +451,16 @@ def render_job_detail_page(company: str, job_id: str) -> None:
         # ⚡ EXPRESS PIPELINE (top-of-tab CTA)
         # ════════════════════════════════════════════════════════
         st.markdown("#### ⚡ Express Pipeline")
-        st.caption("Runs all three stages sequentially: Scorecard → Resume Score → LinkedIn Gap Analysis")
+        st.caption("Runs all three stages sequentially: Scorecard → Resume Score → Supplementary Gap Analysis")
         if has_providers:
             if st.button("⚡ Run Express Pipeline", type="primary", key=f"express_{job_id}",
                          use_container_width=True):
                 _express_result: dict = {}
 
                 with st.status("Running Express Pipeline...", expanded=True) as status:
-                    # Fetch linkedin data & hash for stage 3
-                    linkedin_data = llm_scorer._read_linkedin_data(config)
-                    current_linkedin_hash = hashlib.sha256(linkedin_data.encode()).hexdigest()[:12] if linkedin_data else ""
+                    # Fetch supplementary data & hash for stage 3
+                    supplementary_data = llm_scorer._read_supplementary_data(config)
+                    current_supplementary_hash = hashlib.sha256(supplementary_data.encode()).hexdigest()[:12] if supplementary_data else ""
 
                     # Stage 1 — Scorecard (skip if exists)
                     st.write("📋 Stage 1: Scorecard…")
@@ -506,18 +506,18 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                         st.write("  ⚠️ No scorecard — skipped.")
 
                     # Stage 3 — Gap analysis
-                    st.write("🔍 Stage 3: LinkedIn Gap Analysis…")
-                    if gap_data and gap_data.get("resume_hash") == current_resume_hash and gap_data.get("linkedin_hash") == current_linkedin_hash:
+                    st.write("🔍 Stage 3: Supplementary Gap Analysis…")
+                    if gap_data and gap_data.get("resume_hash") == current_resume_hash and gap_data.get("supplementary_hash") == current_supplementary_hash:
                         st.write("  ✅ Gap analysis already exists and is up-to-date — skipped.")
                     else:
                         gaps_to_check = _express_result.get("shortcomings", [])
                         if gaps_to_check:
-                            gap_result = llm_scorer.check_linkedin_gaps(
-                                gaps_to_check, linkedin_data, providers,
+                            gap_result = llm_scorer.check_supplementary_gaps(
+                                gaps_to_check, supplementary_data, providers,
                                 stage_params=stage_params_map.get("gap_analysis"),
                             )
                             if gap_result:
-                                _save_gap(gap_result, current_linkedin_hash)
+                                _save_gap(gap_result, current_supplementary_hash)
                                 st.write("  ✅ Gap analysis saved.")
                             else:
                                 st.write("  ❌ Gap analysis failed.")
@@ -677,9 +677,9 @@ def render_job_detail_page(company: str, job_id: str) -> None:
         st.divider()
 
         # ════════════════════════════════════════════════════════
-        # SECTION C: LinkedIn Gap Analysis
+        # SECTION C: Supplementary Gap Analysis
         # ════════════════════════════════════════════════════════
-        st.markdown("#### 🔍 LinkedIn Gap Analysis")
+        st.markdown("#### 🔍 Supplementary Gap Analysis")
 
         if gap_data:
             gap_hash = gap_data.get("resume_hash", "")
@@ -688,7 +688,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
             if gap_hash and gap_hash != current_resume_hash:
                 st.warning(
                     "⚠️ Your resume has changed since this gap analysis was generated. "
-                    "Click **Check LinkedIn Gaps** to refresh."
+                    "Click **Check Supplementary Gaps** to refresh."
                 )
 
             coverable   = gap_data.get("coverable", [])
@@ -707,7 +707,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                 for gap in uncoverable:
                     st.markdown(f"- {gap}")
             if not coverable and not uncoverable:
-                st.success("No gaps found — strong LinkedIn alignment!")
+                st.success("No gaps found — strong Supplementary alignment!")
             if "_meta" in gap_data and gap_data["_meta"]:
                 meta = gap_data["_meta"]
                 st.caption(f"*(Analysis generated by **{meta.get('model')}** via {meta.get('provider')})*")
@@ -717,24 +717,24 @@ def render_job_detail_page(company: str, job_id: str) -> None:
             st.info("Gap analysis not yet run. Click below or use Express Pipeline.")
 
         if has_providers and shortcomings_data and shortcomings_data.get("shortcomings"):
-            if st.button("🔍 Check LinkedIn Gaps", key=f"gap_{job_id}"):
-                with st.spinner("Analyzing LinkedIn data against shortcomings..."):
-                    linkedin_data = llm_scorer._read_linkedin_data(config)
-                    current_linkedin_hash = hashlib.sha256(linkedin_data.encode()).hexdigest()[:12] if linkedin_data else ""
-                    gap_result = llm_scorer.check_linkedin_gaps(
+            if st.button("🔍 Check Supplementary Gaps", key=f"gap_{job_id}"):
+                with st.spinner("Analyzing Supplementary data against shortcomings..."):
+                    supplementary_data = llm_scorer._read_supplementary_data(config)
+                    current_supplementary_hash = hashlib.sha256(supplementary_data.encode()).hexdigest()[:12] if supplementary_data else ""
+                    gap_result = llm_scorer.check_supplementary_gaps(
                         shortcomings_data["shortcomings"],
-                        linkedin_data,
+                        supplementary_data,
                         providers,
                         stage_params=stage_params_map.get("gap_analysis"),
                     )
                     if gap_result:
-                        _save_gap(gap_result, current_linkedin_hash)
+                        _save_gap(gap_result, current_supplementary_hash)
                         st.success("✅ Gap analysis complete — results saved.")
                         st.rerun()
                     else:
                         st.error("❌ Gap analysis failed.")
         elif not shortcomings_data:
-            st.caption("Score your resume first to enable LinkedIn gap analysis.")
+            st.caption("Score your resume first to enable Supplementary gap analysis.")
 
 
 # ---------------------------------------------------------------------------
@@ -1008,11 +1008,12 @@ def main() -> None:
                     key="tab2_editor",
                 )
                 
-                col1, col2 = st.columns([1, 5])
+                col1, col2, col3 = st.columns([1, 1, 4])
                 submit_undo = col1.form_submit_button("↩️ Undo Applied")
-                submit_save_rel = col2.form_submit_button("💾 Save Relevance")
+                submit_reject = col2.form_submit_button("🚫 Mark as Rejected (Skip)")
+                submit_save_rel = col3.form_submit_button("💾 Save Relevance")
 
-            if submit_undo or submit_save_rel:
+            if submit_undo or submit_save_rel or submit_reject:
                 changes: list[dict] = []
                 for idx in range(min(len(edited_sent), len(t2_source))):
                     orig     = t2_source.iloc[idx]
@@ -1027,13 +1028,27 @@ def main() -> None:
                             "value":    int(edit["relevance"]),
                         })
 
-                    if submit_undo and edit["selected"]:
-                        changes.append({
-                            "job_id":   full_row["job_id"],
-                            "csv_path": full_row["_csv_path"],
-                            "field":    "applied",
-                            "value":    "",
-                        })
+                    if edit["selected"]:
+                        if submit_undo:
+                            changes.append({
+                                "job_id":   full_row["job_id"],
+                                "csv_path": full_row["_csv_path"],
+                                "field":    "applied",
+                                "value":    "",
+                            })
+                        elif submit_reject:
+                            changes.append({
+                                "job_id":   full_row["job_id"],
+                                "csv_path": full_row["_csv_path"],
+                                "field":    "applied",
+                                "value":    "",
+                            })
+                            changes.append({
+                                "job_id":   full_row["job_id"],
+                                "csv_path": full_row["_csv_path"],
+                                "field":    "skipped",
+                                "value":    "yes",
+                            })
                 if changes:
                     _write_back(changes)
 
@@ -1103,124 +1118,159 @@ def main() -> None:
                 if changes:
                     _write_back(changes)
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # TAB 5 — Insights & Growth
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with tab5:
         st.markdown("### 🧠 Career Insights & Growth Hub")
-        st.caption("Aggregates all job shortcomings from the last 90 days to identify your highest-ROI resume updates and learning goals.")
+        st.caption("Aggregates all job shortcomings into unified missing skills, and checks them against your Supplementary Data.")
 
-        # 1. Read the ledger
         config = config_engine.load_config("config.yaml")
         profile_cfg = config.get("user_profile") or {}
         resume_path = Path(profile_cfg.get("resume_path", "user_details/resume.md"))
         user_details_dir = resume_path.parent
+        digested_path = user_details_dir / "digested_insights.json"
+        cache_path = user_details_dir / "gap_fill_cache.json"
         ledger_path = user_details_dir / "skill_gaps_ledger.jsonl"
-        cache_path = user_details_dir / "global_insights_cache.json"
-
-        # Calculate dates
-        ninety_days_ago = datetime.date.today() - datetime.timedelta(days=90)
         
-        raw_shortcomings = []
-        if ledger_path.exists():
-            with ledger_path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        entry = json.loads(line.strip())
-                        eval_date_str = entry.get("evaluated_at", "")
-                        if eval_date_str:
-                            eval_date = datetime.datetime.fromisoformat(eval_date_str).date()
-                            if eval_date >= ninety_days_ago:
-                                raw_shortcomings.extend(entry.get("shortcomings", []))
-                    except Exception:
-                        continue
+        current_resume_hash = "unknown"
+        if resume_path.exists():
+            current_resume_hash = hashlib.sha256(resume_path.read_text(encoding="utf-8").encode()).hexdigest()[:12]
+            
+        providers, stage_params_map = llm_client.load_llm_config(config)
+        has_providers = len(providers) > 0
 
-        if not raw_shortcomings:
-            st.info("No shortcomings found in the last 90 days. Run the scraper and score some jobs to build your insights ledger!")
+        # --- Top Section: Actionable Data ---
+        cache_data = None
+        if cache_path.exists():
+            try:
+                cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+                
+        if cache_data and "quick_wins" in cache_data:
+            st.caption(f"**Last Gap Fill Run:** {cache_data.get('last_run_date', 'Unknown')[:19]}")
+            if cache_data.get("resume_hash") != current_resume_hash:
+                st.warning("🔄 **Resume has changed since last run.** Your insights might be outdated. Re-run analysis below.")
+            
+            col_qw, col_lp = st.columns(2)
+            with col_qw:
+                st.markdown("#### ⚡ Quick Wins (Resume Updates)")
+                st.info("You already possess these skills based on your Supplementary Data. Add them to your resume immediately.")
+                for item in cache_data.get("quick_wins", []):
+                    with st.expander(f"**{item.get('skill', '')}** (Missing in {item.get('count', 0)} jobs)"):
+                        st.write(f"**Evidence:** {item.get('evidence', '')}")
+            with col_lp:
+                st.markdown("#### 📚 Learning Path (True Gaps)")
+                st.warning("You truly lack these skills. Focus your learning here to maximize employability.")
+                for item in cache_data.get("learning_path", []):
+                    with st.expander(f"**{item.get('skill', '')}** (Missing in {item.get('count', 0)} jobs)"):
+                        st.write(f"**Context:** {item.get('reason', '')}")
         else:
-            st.write(f"📊 **Data Source:** {len(raw_shortcomings)} shortcomings identified across recent job evaluations.")
+            st.info("No actionable data yet. Run the analysis below.")
 
-            # Compute current hashes
-            linkedin_data = llm_scorer._read_linkedin_data(config)
-            current_content_hash = hashlib.sha256(linkedin_data.encode()).hexdigest()[:12] if linkedin_data else ""
-            ledger_text = "".join(sorted(raw_shortcomings))
-            current_ledger_hash = hashlib.sha256(ledger_text.encode()).hexdigest()[:12]
+        st.markdown("---")
 
-            # Load Cache
-            cache_data = None
-            cache_is_valid = False
-            if cache_path.exists():
-                try:
-                    cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if cache_data.get("ledger_hash") == current_ledger_hash and cache_data.get("content_hash") == current_content_hash:
-                        cache_is_valid = True
-                except Exception:
-                    pass
+        # Load digested insights
+        digested = {}
+        if digested_path.exists():
+            try:
+                digested = json.loads(digested_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
 
-            # Display Cache
-            if cache_data and "quick_wins" in cache_data and "learning_path" in cache_data:
-                st.caption(f"Last analyzed: {cache_data.get('last_run_date', 'Unknown')[:19]}")
-                if "_meta" in cache_data and cache_data["_meta"]:
-                    meta = cache_data["_meta"]
-                    st.caption(f"*(Analysis generated by **{meta.get('model')}** via {meta.get('provider')})*")
+        # --- Middle Section: Historical Misses ---
+        past_hashes = [h for h in digested.keys() if h != current_resume_hash]
+        if past_hashes:
+            with st.expander("🕰️ Historical Misses (Past Resume Versions)", expanded=False):
+                st.write("These skills were identified as missing in older versions of your resume:")
+                all_past_skills = set()
+                for ph in past_hashes:
+                    for s in digested[ph].get("clustered_skills", []):
+                        all_past_skills.add(s.get("skill", ""))
                 
-                col_qw, col_lp = st.columns(2)
-                
-                with col_qw:
-                    st.markdown("#### ⚡ Quick Wins (Resume Updates)")
-                    st.info("You already possess these skills based on your LinkedIn data. **Add them to your resume immediately** to boost your match scores.")
-                    quick_wins = cache_data["quick_wins"]
-                    if not quick_wins:
-                        st.success("No quick wins found. Your resume is well-aligned with your LinkedIn profile!")
-                    for item in quick_wins:
-                        with st.expander(f"**{item.get('skill', '')}** (Required by {item.get('count', 0)} jobs)", expanded=True):
-                            st.write(f"**Evidence:** {item.get('evidence', '')}")
-
-                with col_lp:
-                    st.markdown("#### 📚 Learning Path (True Gaps)")
-                    st.warning("You truly lack these skills. Focus your learning and side-projects here to maximize your employability.")
-                    learning_path = cache_data["learning_path"]
-                    if not learning_path:
-                        st.success("No learning gaps found. You are highly qualified!")
-                    for item in learning_path:
-                        with st.expander(f"**{item.get('skill', '')}** (Required by {item.get('count', 0)} jobs)", expanded=True):
-                            st.write(f"**Context:** {item.get('reason', '')}")
-
-            # Run Analysis Button
-            providers, stage_params_map = llm_client.load_llm_config(config)
-            has_providers = len(providers) > 0
-
-            if not has_providers:
-                st.warning("⚠️ No LLM providers configured. Add api_key to config.yaml to run Insights.")
-            else:
-                if cache_is_valid:
-                    st.success("✅ Insights are up-to-date with your latest ledger and LinkedIn data.")
+                # Show as inline code badges
+                if all_past_skills:
+                    badges = " ".join([f"`{s}`" for s in sorted(list(all_past_skills)) if s])
+                    st.markdown(badges)
                 else:
-                    st.info("🔄 Your ledger or LinkedIn data has changed. Run a new analysis to update your insights!")
+                    st.write("None.")
+
+        st.markdown("---")
+
+        # --- Bottom Section: Advanced Editor ---
+        st.markdown("### ⚙️ Advanced Editor (Clustered Gaps)")
+        
+        all_hashes = list(digested.keys())
+        # Sort hashes by last_updated descending
+        all_hashes.sort(key=lambda x: digested.get(x, {}).get("last_updated", ""), reverse=True)
+        if current_resume_hash not in all_hashes:
+            all_hashes.insert(0, current_resume_hash)
+            
+        selected_hash = st.selectbox(
+            "Select Resume Version to view/edit missing skills JSON:", 
+            options=all_hashes,
+            format_func=lambda x: f"{x} (Current Resume)" if x == current_resume_hash else x
+        )
+        
+        is_current = (selected_hash == current_resume_hash)
+        
+        # Determine json string to display
+        active_json_obj = digested.get(selected_hash, {}).get("clustered_skills", [])
+        active_json_str = json.dumps(active_json_obj, indent=2)
+        
+        with st.form("editor_form"):
+            edited_json = st.text_area(
+                "Raw `{skill, count}` JSON array",
+                value=active_json_str,
+                height=300,
+                help="You can manually edit this array to fix LLM clustering mistakes or port over old skills."
+            )
+            
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                save_clicked = st.form_submit_button("💾 Save & Validate JSON", disabled=not is_current)
+            with col_btn2:
+                run_clicked = st.form_submit_button("🚀 Process Ledger & Run Gap Fill", disabled=not is_current or not has_providers)
                 
-                btn_label = "🔄 Re-run Analysis" if cache_data else "🚀 Run Initial Analysis"
-                if st.button(btn_label, type="primary" if not cache_is_valid else "secondary"):
-                    with st.spinner("Clustering shortcomings and analyzing coverage... this may take a moment."):
-                        result = llm_scorer.aggregate_and_analyze_gaps(
-                            raw_shortcomings,
-                            linkedin_data,
-                            providers,
-                            stage_params=stage_params_map.get("global_insights")
-                        )
-                        if result:
-                            cache_payload = {
-                                "last_run_date": datetime.datetime.now().isoformat(),
-                                "ledger_hash": current_ledger_hash,
-                                "content_hash": current_content_hash,
-                                "quick_wins": result.get("quick_wins", []),
-                                "learning_path": result.get("learning_path", []),
-                                "_meta": result.get("_meta", {})
-                            }
-                            cache_path.write_text(json.dumps(cache_payload, indent=2, ensure_ascii=False), encoding="utf-8")
-                            st.success("✅ Insights updated!")
-                            st.rerun()
-                        else:
-                            st.error("❌ Failed to generate insights. Check console logs.")
+            if save_clicked and is_current:
+                try:
+                    parsed = json.loads(edited_json)
+                    if not isinstance(parsed, list):
+                        st.error("JSON must be a list of objects.")
+                    else:
+                        if selected_hash not in digested:
+                            digested[selected_hash] = {}
+                        digested[selected_hash]["clustered_skills"] = parsed
+                        digested[selected_hash]["last_updated"] = datetime.datetime.now().isoformat()
+                        digested_path.write_text(json.dumps(digested, indent=2), encoding="utf-8")
+                        st.success("JSON saved successfully!")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Invalid JSON: {e}")
+                    
+            if run_clicked and is_current:
+                with st.spinner("Processing ledger and running MapReduce Gap Fill..."):
+                    # 1. Digest active ledger first
+                    updated_digested = llm_scorer.digest_ledger(config, providers, stage_params_map.get("global_insights"))
+                    
+                    # 2. Get current resume clustered skills
+                    clustered = updated_digested.get(current_resume_hash, {}).get("clustered_skills", [])
+                    
+                    # 3. Gap Fill
+                    result = llm_scorer.run_gap_fill(clustered, config, providers, stage_params_map.get("global_insights"))
+                    if result:
+                        cache_payload = {
+                            "last_run_date": datetime.datetime.now().isoformat(),
+                            "resume_hash": current_resume_hash,
+                            "quick_wins": result.get("quick_wins", []),
+                            "learning_path": result.get("learning_path", []),
+                            "_meta": result.get("_meta", {})
+                        }
+                        cache_path.write_text(json.dumps(cache_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                        st.success("✅ Gap Fill Analysis complete!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to generate gap fill analysis. Check logs.")
 
 
 # ---------------------------------------------------------------------------

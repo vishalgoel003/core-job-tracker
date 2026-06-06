@@ -611,7 +611,7 @@ def call_llm(
                 print(f"  [LLM] Trying {provider.name} ({model}) key={key_label} ...")
 
                 try:
-                    response = session.post(url, json=body, headers=headers, timeout=60)
+                    response = session.post(url, json=body, headers=headers, timeout=150)
                 except requests.exceptions.RequestException as exc:
                     print(f"  [LLM] {provider.name} network error: {exc}")
                     continue
@@ -658,7 +658,7 @@ def call_llm(
                             )
 
                         try:
-                            retry_resp = session.post(url2, json=body2, headers=headers2, timeout=60)
+                            retry_resp = session.post(url2, json=body2, headers=headers2, timeout=150)
                         except requests.exceptions.RequestException as exc:
                             print(f"  [LLM] {provider.name} retry network error: {exc}")
                             continue

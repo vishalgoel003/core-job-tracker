@@ -13,7 +13,7 @@ A self-hosted, multi-company job application CRM built entirely in Python. Scrap
 | **Rich Job Files** | Per-job `.md` files with metadata table (Posted Date, Age, Deadline), full HTML-to-Markdown job description via `html2text`, and an editable `## Notes` section. |
 | **Web UI** | Streamlit 3-Tab CRM: Active Radar · Sent Applications · Archived. Inline applied date-stamping, relevance scoring, and `filelock` safe write-back. |
 | **LLM Scorer** | On-demand scorecard generation + resume evaluation using free-tier cloud APIs (Groq, Gemini, Cerebras) or local models (Ollama/LM Studio). Provider cascade with smart rate-limit header awareness. |
-| **Gap Analysis** | LinkedIn data export cross-referencing against identified shortcomings — shows what gaps your LinkedIn profile can cover before applying. |
+| **Gap Analysis** | Supplementary data cross-referencing against identified shortcomings — shows what gaps your Supplementary data can cover before applying. |
 
 ---
 
@@ -24,7 +24,7 @@ The scorer uses a **two-pass architecture** (with an optional third pass):
 ```
 Pass 1: Job Description → LLM → Scorecard JSON      (what does this job need?)
 Pass 2: Resume + Scorecard → LLM → Score + Gaps      (how well do I match?)
-Pass 3: Shortcomings + LinkedIn → LLM → Gap Report    (can I cover the gaps?)
+Pass 3: Shortcomings + Supplementary Data → LLM → Gap Report    (can I cover the gaps?)
 ```
 
 Each pipeline stage defines an ordered list of preferred models in `config.yaml`. The client uses a **Model-First Cascade** to route requests.
@@ -72,6 +72,19 @@ cp config.yaml.sample config.yaml          # Linux/macOS/Git Bash
 
 ---
 
+## Preparing Your Profile Data
+
+Before scoring jobs, you must populate your `user_details/` folder:
+
+1. **Resume (`resume.md`)**: The pipeline expects your resume in Markdown format. If you have a PDF, copy its text into ChatGPT/Claude and ask: *"Format this resume into clean Markdown"*. Save it as `user_details/resume.md`.
+2. **Supplementary Data (LinkedIn Export)**: To run the Gap Fill Analysis, the system needs your LinkedIn profile data.
+   - Go to LinkedIn → Settings & Privacy → Data Privacy → **Get a copy of your data**.
+   - Request the **Profile** data bundle (or larger).
+   - Once emailed to you, extract the CSV files (`Skills.csv`, `Positions.csv`, `Projects.csv`, etc.) into `user_details/SupplementaryData/`.
+3. **Custom Notes (`custom_notes.md`)**: An optional markdown file where you can manually type out extra certifications, GitHub repos, or skills not captured in your LinkedIn dump.
+
+---
+
 ## Project Structure
 
 ```
@@ -101,11 +114,11 @@ core-job-tracker/
 │       │   └── job_<id>.scorecard.json   ← LLM-generated evaluation scheme
 │       └── shortcomings/
 │           ├── job_<id>.shortcomings.json ← Resume gaps for this job
-│           └── job_<id>.gap_analysis.json ← LinkedIn gap analysis results
+│           └── job_<id>.gap_analysis.json ← Gap analysis results
 ├── user_details/                ← Your profile data (untracked)
 │   ├── resume.md
-│   ├── extra.md
-│   └── Basic_LinkedInDataExport/
+│   ├── custom_notes.md
+│   └── SupplementaryData/
 └── reference/                   ← Read-only reference repos [SEC-3.1]
 ```
 
@@ -180,7 +193,7 @@ python src/llm_scorer.py
 # Score a specific job:
 python src/llm_scorer.py --job JR-0000105811 --company Barclays
 
-# Run LinkedIn gap analysis for a scored job:
+# Run Gap analysis for a scored job:
 python src/llm_scorer.py --gap-check JR-0000105811 --company Barclays
 ```
 
@@ -203,6 +216,7 @@ Open **http://localhost:8501** in your browser.
 | **📤 Sent Applications** | All jobs with an application date | Read-only · Click 🔗 to open details |
 | **📦 Archived** | Delisted jobs (removed from live board) | Read-only · Click 🔗 to view cached JD |
 | **🚫 Skipped** | Live jobs marked as unsuitable | Uncheck 🚫 to restore to Active Radar |
+| **🧠 Insights & Growth** | MapReduce pipeline of aggregated missing skills | View Quick Wins · View Historical Misses · Run Gap Fill |
 
 **Sidebar controls:** Company filter, keyword search, sort priority (Deadline ↑ / Relevance ↓ / Posted Date ↓), deadline alert window.
 - **🚀 Run Scraper:** Fetches latest jobs via backend subprocess.
@@ -212,7 +226,7 @@ Open **http://localhost:8501** in your browser.
 Opens in a new browser tab via URL routing (fully compatible with Cloudflare Tunnels).
 - `📄 Job Description` — Full rendered Markdown from the `.md` file
 - `✏️ My Notes` — Edit and save directly to the `## Notes` section of the `.md` file
-- `🤖 LLM / Resume` — Express Pipeline (1-click evaluation with smart hashing/caching), scorecard editor, resume scoring, and LinkedIn gap analysis
+- `🤖 LLM / Resume` — Express Pipeline (1-click evaluation with smart hashing/caching), scorecard editor, resume scoring, and Gap analysis
 
 ---
 

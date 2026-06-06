@@ -112,7 +112,7 @@ llm:
   # Design rationale:
   #   scorecard:   structured extraction → gpt-oss-120b (largest free model, 3 providers)
   #   evaluation:  nuanced scoring → gpt-oss-120b primary, qwen3-32b for throughput
-  #   gap_analysis: huge context (LinkedIn data) → gemma-4-31b-it (unlimited TPM, 1.5k RPD)
+  #   gap_analysis: huge context (Supplementary data) → gemma-4-31b-it (unlimited TPM, 1.5k RPD)
   #
   # Rate limit awareness:
   #   - gpt-oss-120b: available on Groq (30 RPM), OpenRouter (20 RPM), Cerebras (5 RPM)
@@ -174,9 +174,9 @@ llm:
 # Used by the LLM scoring pipeline to evaluate resume against job scorecards.
 user_profile:
   resume_path: "user_details/resume.md"
-  extra_path: "user_details/extra.md"
-  linkedin_dir: "user_details/Basic_LinkedInDataExport"
-  linkedin_files:                   # Relevant files from LinkedIn data export
+  custom_notes_path: "user_details/custom_notes.md"
+  supplementary_dir: "user_details/SupplementaryData"
+  supplementary_files:                   # Relevant files from Supplementary data export
     - "Positions.csv"
     - "Projects.csv"
     - "Skills.csv"
