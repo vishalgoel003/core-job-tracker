@@ -26,10 +26,8 @@ import csv
 import datetime
 import hashlib
 import json
-import re
 import sys
 from pathlib import Path
-from typing import Any
 
 import filelock
 
@@ -407,6 +405,7 @@ def evaluate_resume(
         stage="evaluation",
         stage_params=params,
         json_mode=True,
+        validator_fn=lambda t: llm_client.extract_json(t) is not None,
     )
 
     if not raw_text:
@@ -479,6 +478,7 @@ def check_linkedin_gaps(
         stage="gap_analysis",
         stage_params=params,
         json_mode=True,
+        validator_fn=lambda t: llm_client.extract_json(t) is not None,
     )
 
     if not raw_text:
@@ -569,6 +569,7 @@ def aggregate_and_analyze_gaps(
         stage="global_insights",
         stage_params=params,
         json_mode=True,
+        validator_fn=lambda t: llm_client.extract_json(t) is not None,
     )
 
     if not raw_text:
@@ -577,7 +578,10 @@ def aggregate_and_analyze_gaps(
 
     result = llm_client.extract_json(raw_text)
     if not result:
-        print("  [SCORER] Failed to parse Global Insights JSON from LLM response.")
+        print("  [SCORER] Failed to parse Global Insights JSON from LLM response. Raw text:")
+        print("-" * 40)
+        print(raw_text)
+        print("-" * 40)
         return None
 
     # Inject metadata
@@ -716,7 +720,7 @@ def score_job(
         shortcomings_data = existing_evaluation
     else:
         # 4. Evaluate resume
-        print(f"  [SCORER] Evaluating resume against scorecard ...")
+        print("  [SCORER] Evaluating resume against scorecard ...")
         evaluation = evaluate_resume(
             resume_md,
             scorecard,
@@ -1055,7 +1059,7 @@ def run_debug_matrix(config: dict) -> None:
     failures = [r for r in results if not r["validation"]]
     if failures:
         print(f"\n{'='*90}")
-        print(f"  FAILURE DETAILS")
+        print("  FAILURE DETAILS")
         print(f"{'='*90}")
         for r in failures:
             print(f"\n  {r['stage']} | {r['provider']} | {r['model']}")
@@ -1118,7 +1122,7 @@ def main() -> None:
         shortcomings_path = Path(path_map[args.company]["shortcomings_dir"]) / f"job_{safe_id}.shortcomings.json"
 
         if not shortcomings_path.exists():
-            print(f"[ERROR] No shortcomings file found. Score the job first:")
+            print("[ERROR] No shortcomings file found. Score the job first:")
             print(f"  python src/llm_scorer.py --job {args.gap_check} --company {args.company}")
             sys.exit(1)
 
@@ -1184,7 +1188,7 @@ def main() -> None:
         failed = [r for r in results if "error" in r]
 
         print(f"\n{'='*60}")
-        print(f"  Batch Scoring Complete")
+        print("  Batch Scoring Complete")
         print(f"{'='*60}")
         print(f"  Scored: {len(scored)}  |  Failed: {len(failed)}")
         if scored:

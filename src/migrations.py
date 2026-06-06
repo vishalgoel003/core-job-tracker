@@ -3,7 +3,6 @@ migrations.py — Run this once to backfill existing shortcomings into the new g
 """
 
 import json
-import os
 from pathlib import Path
 
 def backfill_ledger():
@@ -62,6 +61,7 @@ def backfill_ledger():
                         "evaluated_at": data.get("evaluated_at"),
                         "resume_hash": data.get("resume_hash", ""),
                         "shortcomings": data.get("shortcomings", []),
+                        "_meta": data.get("_meta", {}),
                     }
                     
                     out_fh.write(json.dumps(ledger_entry, ensure_ascii=False) + "\n")

@@ -4,8 +4,6 @@ This script bypasses the core application logic and uses the llm_client
 directly to ping each configured provider.
 """
 
-import sys
-import json
 import argparse
 import time
 

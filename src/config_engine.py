@@ -8,7 +8,6 @@ Usage (inside activated venv, from project root):
     python src/config_engine.py
 """
 
-import os
 import sys
 from pathlib import Path
 import re

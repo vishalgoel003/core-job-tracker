@@ -31,7 +31,6 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable
 
 import requests
@@ -435,7 +434,7 @@ def _extract_response_text(adapter: str, response_json: dict) -> str | None:
                 # Log and return None so the cascade advances.
                 finish = choices[0].get("finish_reason", "")
                 if finish == "length":
-                    print(f"  [LLM] Response truncated (finish_reason=length) — model used all tokens on reasoning.")
+                    print("  [LLM] Response truncated (finish_reason=length) — model used all tokens on reasoning.")
                 pass
 
     elif adapter == "gemini":

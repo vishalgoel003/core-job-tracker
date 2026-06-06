@@ -23,10 +23,6 @@ import json
 import hashlib
 from pathlib import Path
 
-# Path injection — allows `import src.config_engine` from the project root
-_PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT))
-
 import datetime
 import re
 from collections import defaultdict
@@ -35,9 +31,13 @@ import filelock
 import pandas as pd
 import streamlit as st
 
-import src.config_engine as config_engine
-import src.llm_client as llm_client
-import src.llm_scorer as llm_scorer
+# Path injection — allows `import src.config_engine` from the project root
+_PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
+
+import src.config_engine as config_engine  # noqa: E402
+import src.llm_client as llm_client        # noqa: E402
+import src.llm_scorer as llm_scorer        # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Page configuration  (must be the FIRST Streamlit call)
@@ -325,7 +325,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
     with col_title:
         # Try to pull title from markdown h1 line
         md_text_raw = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
-        title_line  = next((l.lstrip("# ").strip() for l in md_text_raw.splitlines() if l.startswith("#")), job_id)
+        title_line  = next((line.lstrip("# ").strip() for line in md_text_raw.splitlines() if line.startswith("#")), job_id)
         st.markdown(f"### {title_line}")
         st.caption(f"**{company}**  ·  `{job_id}`")
     st.divider()
@@ -1050,7 +1050,7 @@ def main() -> None:
             st.caption("Read-only. Click 🔗 to view the cached Job Description in a new tab.")
             t3_source = archived_df[_ARCHIVED_BASE].copy().reset_index(drop=True)
 
-            edited_arch = st.data_editor(
+            st.data_editor(
                 t3_source,
                 column_config={k: v for k, v in _COL_CFG.items() if k in t3_source.columns},
                 disabled=[c for c in _ARCHIVED_BASE if c in t3_source.columns],
