@@ -499,7 +499,6 @@ def check_supplementary_gaps(
     if not shortcomings:
         return {"coverable": [], "uncoverable": []}
 
-    supplementary_data = _read_supplementary_data(config)
     if not supplementary_data.strip():
         return {"coverable": [], "uncoverable": shortcomings}
 
