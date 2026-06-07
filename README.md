@@ -106,6 +106,7 @@ core-job-tracker/
 ├── web/
 │   └── app.py               ← Streamlit Job Application OS (imports from src/)
 ├── targets/
+│   ├── Manual/                  ← Special isolated tracking for non-automated jobs
 │   └── [CompanyName]/
 │       ├── master_jobs.csv      ← Canonical state ledger
 │       ├── job_details/
@@ -212,10 +213,10 @@ Open **http://localhost:8501** in your browser.
 
 | Tab | Contents | Editable |
 |---|---|---|
-| **🎯 Active Radar** | All visible jobs not yet applied to | ✅ App (saves date) · 🚫 Skip (hides job) · 🤖 Bulk Score |
+| **🎯 Active Radar** | All visible jobs not yet applied to | ✅ App · 🚫 Skip · 🤖 Score · 🗑️ Delete (Manual) |
 | **📤 Sent Applications** | All jobs with an application date | Read-only · Click 🔗 to open details |
-| **📦 Archived** | Delisted jobs (removed from live board) | Read-only · Click 🔗 to view cached JD |
-| **🚫 Skipped** | Live jobs marked as unsuitable | Uncheck 🚫 to restore to Active Radar |
+| **📦 Archive & Skipped** | Delisted jobs (dead) and Skipped jobs (live) | Uncheck 🚫 to restore Skipped to Active Radar |
+| **➕ Manual Entry** | Form to add external non-Workday jobs | Create custom jobs isolated from the scraper |
 | **🧠 Insights & Growth** | MapReduce pipeline of aggregated missing skills | View Quick Wins · View Historical Misses · Run Gap Fill |
 | **⚙️ Settings & Files** | Cloud File Manager for Docker deployments | Edit `config.yaml`, `resume.md`, and `SupplementaryData` without SSH |
 
@@ -314,10 +315,11 @@ The script will natively build the ARM64 image using your OCI server's hardware 
 - [x] Task 7: Parallel multi-company scraping
 - [x] Task 8: LLM `--debug` matrix mode — force-test all models × providers × stages to generate a success-rate matrix. Implement JSON-mode fallback extractor to handle strict-mode 400 errors from providers like Groq.
 - [x] Task 9: Native Dockerization & OCI remote packaging strategy
-- [ ] Task 10: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
-- [ ] Task 11: Automated daily scraper scheduler
-- [ ] Task 12: Fully automated async scoring pipeline
-- [ ] Task 13: Phase 2 API Migration (FastAPI backend + Next.js frontend)
+- [x] Task 10: Manual Jobs Pipeline (Isolated UI-driven tracking for non-Workday external jobs)
+- [ ] Task 11: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
+- [ ] Task 12: Automated daily scraper scheduler
+- [ ] Task 13: Fully automated async scoring pipeline
+- [ ] Task 14: Phase 2 API Migration (FastAPI backend + Next.js frontend)
 
 ---
 

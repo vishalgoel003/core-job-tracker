@@ -10,6 +10,11 @@ services:
       - ./user_details:/app/user_details
     networks:
       - app_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   app_network:

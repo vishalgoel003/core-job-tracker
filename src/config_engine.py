@@ -120,6 +120,19 @@ def resolve_output_paths(config: dict) -> list[dict]:
             }
         )
 
+    # Inject the pseudo-company for Manual Jobs
+    manual_root = base_dir / "Manual"
+    results.append(
+        {
+            "name":              "Manual",
+            "ats_type":          "manual",
+            "root_dir":          manual_root,
+            "job_details_dir":   manual_root / "job_details",
+            "scorecards_dir":    manual_root / "scorecards",
+            "shortcomings_dir":  manual_root / "shortcomings",
+        }
+    )
+
     return results
 
 

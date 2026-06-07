@@ -582,7 +582,8 @@ def main() -> None:
     
     # Save scrape metadata for UI
     import json
-    metadata_path = Path("targets/scrape_metadata.json")
+    base_dir = Path(config["global_settings"]["output_base_dir"])
+    metadata_path = base_dir / "scrape_metadata.json"
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.write_text(
         json.dumps({

@@ -184,7 +184,10 @@ def load_all_jobs() -> tuple[pd.DataFrame, float]:
         job_details_dir = Path(p["job_details_dir"])
         if not csv_path.exists():
             continue
-        df = pd.read_csv(csv_path, dtype=str).fillna("")
+        try:
+            df = pd.read_csv(csv_path, dtype=str).fillna("")
+        except pd.errors.EmptyDataError:
+            continue
         df["_company"]  = p["name"]
         df["_csv_path"] = str(csv_path)
         df["_md_dir"]   = str(job_details_dir)
@@ -909,7 +912,9 @@ def main() -> None:
     
     def _render_scrape_status():
         last_scrape_time = None
-        metadata_path = Path("targets/scrape_metadata.json")
+        config_meta = config_engine.load_config("config.yaml")
+        base_dir_meta = Path(config_meta["global_settings"]["output_base_dir"])
+        metadata_path = base_dir_meta / "scrape_metadata.json"
         if metadata_path.exists():
             try:
                 data = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -951,11 +956,11 @@ def main() -> None:
     m4.metric("🏢 Companies", len(company_filter))
 
     # ── Tabs ────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab_active, tab_sent, tab_archive, tab_manual, tab_insights, tab_settings = st.tabs([
         f"🎯 Active Radar  ({len(active_df)})",
         f"📤 Sent Applications  ({len(sent_df)})",
-        f"📦 Archived  ({len(archived_df)})",
-        f"🚫 Skipped  ({len(skipped_df)})",
+        f"📦 Archive & Skipped  ({len(archived_df) + len(skipped_df)})",
+        "➕ Manual Entry",
         "🧠 Insights & Growth",
         "⚙️ Settings & Files",
     ])
@@ -963,7 +968,7 @@ def main() -> None:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # TAB 1 — Active Radar
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    with tab1:
+    with tab_active:
         if active_df.empty:
             st.info("No active jobs match your filters. Try broadening your search.")
         else:
@@ -982,11 +987,59 @@ def main() -> None:
                     key="tab1_editor",
                 )
                 
-                col1, col2, col3, col4 = st.columns([1, 1, 1, 3])
+                col1, col2, col3, col4, col5 = st.columns([1.2, 1, 1, 1.2, 3])
                 submit_applied = col1.form_submit_button("✅ Mark Applied", type="primary")
                 submit_skipped = col2.form_submit_button("🚫 Mark Skipped")
                 submit_score   = col3.form_submit_button("🤖 Bulk Score")
-                submit_save    = col4.form_submit_button("💾 Save Relevance")
+                submit_delete  = col4.form_submit_button("🗑️ Delete (Manual)")
+                submit_save    = col5.form_submit_button("💾 Save")
+
+            if submit_delete:
+                selected_jobs = [active_df.iloc[i] for i in range(len(edited)) if edited.iloc[i]["selected"]]
+                if selected_jobs:
+                    non_manual = [j for j in selected_jobs if j["_company"] != "Manual"]
+                    if non_manual:
+                        st.error("❌ Bulk Delete is strictly restricted to Manual jobs. Please deselect Workday jobs.")
+                    else:
+                        for row in selected_jobs:
+                            job_id = row["job_id"]
+                            # Delete files
+                            config_del = config_engine.load_config("config.yaml")
+                            base_dir_del = Path(config_del["global_settings"]["output_base_dir"])
+                            manual_root = base_dir_del / "Manual"
+                            md_path = manual_root / "job_details" / f"job_{job_id}.md"
+                            sc_path = manual_root / "scorecards" / f"job_{job_id}.scorecard.json"
+                            sh_path = manual_root / "shortcomings" / f"job_{job_id}.shortcomings.json"
+                            
+                            for p in [md_path, sc_path, sh_path]:
+                                if p.exists():
+                                    try:
+                                        p.unlink()
+                                    except Exception:
+                                        pass
+                                    
+                            # Remove from CSV
+                            csv_path = manual_root / "master_jobs.csv"
+                            if csv_path.exists():
+                                import csv
+                                ledger = {}
+                                with csv_path.open("r", encoding="utf-8") as f:
+                                    for r in csv.DictReader(f):
+                                        if r["job_id"] != job_id:
+                                            ledger[r["job_id"]] = r
+                                            
+                                import filelock
+                                lock_path = str(csv_path) + ".lock"
+                                with filelock.FileLock(lock_path, timeout=30):
+                                    with csv_path.open("w", newline="", encoding="utf-8") as f:
+                                        writer = csv.DictWriter(f, fieldnames=config_engine.CSV_COLUMNS, extrasaction="ignore")
+                                        writer.writeheader()
+                                        for r in ledger.values():
+                                            writer.writerow(r)
+                                            
+                        st.success(f"Deleted {len(selected_jobs)} manual job(s).")
+                        st.cache_data.clear()
+                        st.rerun()
 
             if submit_score:
                 selected_jobs = [active_df.iloc[i] for i in range(len(edited)) if edited.iloc[i]["selected"]]
@@ -1044,7 +1097,7 @@ def main() -> None:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # TAB 2 — Sent Applications (editable — uncheck "App" to undo)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    with tab2:
+    with tab_sent:
         if sent_df.empty:
             st.info(
                 "No applications tracked yet.  \n"
@@ -1111,33 +1164,10 @@ def main() -> None:
                     _write_back(changes)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # TAB 3 — Archived (read-only except for 📖 open_modal)
+    # TAB 3 — Archive & Skipped
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    with tab3:
-        if archived_df.empty:
-            st.info(
-                "No archived jobs yet.  \n"
-                "Jobs appear here when removed from the live board on the next scraper run."
-            )
-        else:
-            st.caption("Read-only. Click 🔗 to view the cached Job Description in a new tab.")
-            t3_source = archived_df[_ARCHIVED_BASE].copy().reset_index(drop=True)
-
-            st.data_editor(
-                t3_source,
-                column_config={k: v for k, v in _COL_CFG.items() if k in t3_source.columns},
-                disabled=[c for c in _ARCHIVED_BASE if c in t3_source.columns],
-                width="stretch",
-                hide_index=True,
-                num_rows="fixed",
-                key="tab3_editor",
-            )
-
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # TAB 4 — Skipped Jobs (un-skip by unchecking 🚫)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    with tab4:
+    with tab_archive:
+        st.markdown("### 🚫 Skipped Jobs (Live)")
         if skipped_df.empty:
             st.info(
                 "No skipped jobs.  \n"
@@ -1176,9 +1206,117 @@ def main() -> None:
                 if changes:
                     _write_back(changes)
 
+        st.divider()
+        st.markdown("### 📦 Delisted Jobs (Dead)")
+        if archived_df.empty:
+            st.info(
+                "No archived jobs yet.  \n"
+                "Jobs appear here when removed from the live board on the next scraper run."
+            )
+        else:
+            st.caption("Read-only. Click 🔗 to view the cached Job Description in a new tab.")
+            t3_source = archived_df[_ARCHIVED_BASE].copy().reset_index(drop=True)
+
+            st.data_editor(
+                t3_source,
+                column_config={k: v for k, v in _COL_CFG.items() if k in t3_source.columns},
+                disabled=[c for c in _ARCHIVED_BASE if c in t3_source.columns],
+                width="stretch",
+                hide_index=True,
+                num_rows="fixed",
+                key="tab3_editor",
+            )
+
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # TAB 4 — Manual Entry
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with tab_manual:
+        st.markdown("### ➕ Add Manual Job")
+        st.caption("Track external applications (e.g., from LinkedIn or Indeed).")
+        
+        if "manual_success" in st.session_state:
+            st.success(st.session_state.pop("manual_success"))
+            
+        with st.form("manual_job_form", clear_on_submit=True):
+            man_company = st.text_input("Company Name *", placeholder="e.g., Google")
+            man_title   = st.text_input("Job Title *", placeholder="e.g., Software Engineer")
+            man_url     = st.text_input("Job URL (optional)", placeholder="https://...")
+            
+            c1, c2 = st.columns(2)
+            man_posted   = c1.date_input("Posted Date *", value="today")
+            man_deadline = c2.date_input("Deadline (optional)", value=None)
+            
+            man_desc = st.text_area("Job Description *", height=300, placeholder="Paste the full job description here...")
+            
+            submit_manual = st.form_submit_button("💾 Save Manual Job", type="primary")
+            
+        if submit_manual:
+            if not man_company.strip() or not man_title.strip() or not man_desc.strip():
+                st.error("Company, Title, and Description are required.")
+            else:
+                import uuid
+                manual_id = f"MANUAL-{uuid.uuid4().hex[:8].upper()}"
+                
+                # Format markdown
+                url_line = f"| **URL**          | {man_url} |\n" if man_url.strip() else ""
+                deadline_line = f"| **Deadline**     | {man_deadline.isoformat()} |\n" if man_deadline else ""
+                
+                content = f"# [{man_company.strip()}] {man_title.strip()}\n\n"
+                content += "| Field            | Value |\n"
+                content += "|------------------|-------|\n"
+                content += f"| **Company**      | {man_company.strip()} |\n"
+                content += f"| **Posted Date**  | {man_posted.isoformat()} |\n"
+                content += deadline_line
+                content += url_line
+                content += "\n---\n\n## Job Description\n\n"
+                content += man_desc
+                
+                # Write files
+                config_add = config_engine.load_config("config.yaml")
+                base_dir_add = Path(config_add["global_settings"]["output_base_dir"])
+                manual_root = base_dir_add / "Manual"
+                jd_dir = manual_root / "job_details"
+                jd_dir.mkdir(parents=True, exist_ok=True)
+                
+                md_path = jd_dir / f"job_{manual_id}.md"
+                md_path.write_text(content, encoding="utf-8")
+                
+                csv_path = manual_root / "master_jobs.csv"
+                ledger = {}
+                import csv
+                if csv_path.exists():
+                    with csv_path.open("r", encoding="utf-8") as f:
+                        for row in csv.DictReader(f):
+                            ledger[row["job_id"]] = row
+                            
+                ledger[manual_id] = {
+                    "job_id": manual_id,
+                    "title": f"[{man_company.strip()}] {man_title.strip()}",
+                    "first_discovered_on": man_posted.isoformat(),
+                    "last_date": man_deadline.isoformat() if man_deadline else "",
+                    "visible": "yes",
+                    "relevance": "0",
+                    "applied": "",
+                    "skipped": ""
+                }
+                
+                import filelock
+                lock_path = str(csv_path) + ".lock"
+                with filelock.FileLock(lock_path, timeout=30):
+                    with csv_path.open("w", newline="", encoding="utf-8") as f:
+                        writer = csv.DictWriter(f, fieldnames=config_engine.CSV_COLUMNS, extrasaction="ignore")
+                        writer.writeheader()
+                        for r in ledger.values():
+                            writer.writerow(r)
+                            
+                st.session_state["manual_success"] = f"Successfully added manual job: {manual_id}"
+                st.cache_data.clear()
+                st.rerun()
+
     # TAB 5 — Insights & Growth
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    with tab5:
+    with tab_insights:
         st.markdown("### 🧠 Career Insights & Growth Hub")
         st.caption("Aggregates all job shortcomings into unified missing skills, and checks them against your Supplementary Data.")
 
@@ -1336,7 +1474,7 @@ def main() -> None:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # TAB 6 — Settings & Files
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    with tab6:
+    with tab_settings:
         st.markdown("### ⚙️ Cloud File Manager")
         st.caption("Edit your base configuration and profile data directly on the server without SSH.")
         
