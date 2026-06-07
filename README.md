@@ -22,9 +22,10 @@ A self-hosted, multi-company job application CRM built entirely in Python. Scrap
 The scorer uses a **two-pass architecture** (with an optional third pass):
 
 ```
-Pass 1: Job Description → LLM → Scorecard JSON      (what does this job need?)
-Pass 2: Resume + Scorecard → LLM → Score + Gaps      (how well do I match?)
-Pass 3: Shortcomings + Supplementary Data → LLM → Gap Report    (can I cover the gaps?)
+Pass 1: Job Description → LLM → Scorecard JSON          (what does this job need?)
+Pass 2: Resume + Scorecard → LLM → Score + Gaps          (how well do I match?)
+Pass 3: Map-Reduce Shortcomings → LLM → Clustered Skills (what are my overall macro-gaps?)
+Pass 4: Clustered Skills + LinkedIn Data → LLM → Report  (can my past experience cover these gaps?)
 ```
 
 Each pipeline stage defines an ordered list of preferred models in `config.yaml`. The client uses a **Model-First Cascade** to route requests.
@@ -32,6 +33,10 @@ Each pipeline stage defines an ordered list of preferred models in `config.yaml`
 **Scorecard** — The LLM extracts pillars (TECH, SYS, OPS, SEC, DOM, LDR, MSC, etc.) with relative weights that are auto-normalized to sum to 1000. A 1-shot JSON example in the prompt prevents schema collapse on smaller models. You can view and edit the scorecard in the UI before scoring.
 
 **Shortcomings** — Specific, actionable gaps (not vague observations) are saved to disk and displayed in the UI. Old shortcomings never contaminate new LLM calls.
+
+**Insights & Growth Hub (Map-Reduce)** — To provide macro-level career guidance, the system uses a Map-Reduce pipeline. It batches all shortcomings across all your job applications into chunks, asks the LLM to cluster them into unified skills, and then merges those partial clusters into a final, exhaustive `[{"skill": "...", "count": X}]` JSON array. It then cross-references this array against your LinkedIn profile data to find "Quick Wins" (skills you have but forgot to put on your resume) and "Learning Paths" (true gaps you need to study).
+
+**Manual AI Bypass (For Local Models)** — If you are using local or weaker open-source models that struggle with the heavy JSON logic of Map-Reduce, the UI provides an **"Export Raw Gaps for External AI"** expander. You can copy the generated prompt, feed it to a powerhouse model like ChatGPT Plus or Claude Pro, and paste the resulting JSON back into the Advanced Editor. Simply click **"⚡ Gap Fill ONLY"** to bypass the local clustering entirely.
 
 **Model-First Cascade** — Stages specify models in preference order (e.g., `openai/gpt-oss-120b` → `gemini-3.5-flash`). For each model, the client finds all providers capable of serving it and round-robins through **all API keys** (family accounts) before advancing to the next model. `rpm_limit` is tracked **per key**, not per provider. The same model available on multiple providers (e.g., `gpt-oss-120b` on Groq, Cerebras, OpenRouter) should be listed with each provider's model ID for automatic cross-provider failover. Supports cloud APIs and local endpoints (Ollama, LM Studio via Tailscale).
 
@@ -96,6 +101,9 @@ DEBUG_INSIGHTS_LOG=1 streamlit run web/app.py
 
 This will create `logs/insight_pipeline_debug.log` containing the complete prompts and raw JSON responses. Use this to verify if the LLM is disobeying prompt instructions. 
 
+**Resetting LLM State**
+If you have made significant changes to your configuration or prompts and want to wipe all local JSON scorecards, shortcomings, and digested insights to start fresh, open the **Settings Tab (Tab 6)** in the Streamlit UI and click the **Wipe All LLM State** button. This safely deletes cached outputs without touching your parsed Markdown job descriptions or CSV ledgers (it merely resets their 'relevance' to 0).
+
 **Note on Local Imports:**
 The codebase has been refactored to strictly avoid local `import` statements within functions. If modifying `app.py` or `llm_scorer.py`, keep all imports at the global file level to prevent Python `UnboundLocalError`.
 
@@ -123,21 +131,23 @@ core-job-tracker/
 │   └── llm_scorer.py        ← Scorecard generation + resume evaluation + gap check
 ├── web/
 │   └── app.py               ← Streamlit Job Application OS (imports from src/)
-├── targets/
+├── targets/                     ← Generated company data (untracked)
 │   ├── Manual/                  ← Special isolated tracking for non-automated jobs
 │   └── [CompanyName]/
 │       ├── master_jobs.csv      ← Canonical state ledger
 │       ├── job_details/
 │       │   └── job_<id>.md      ← Full JD + editable Notes
 │       ├── scorecards/
-│       │   └── job_<id>.scorecard.json   ← LLM-generated evaluation scheme
+│       │   └── job_<id>.scorecard.json   ← LLM-generated evaluation scheme (untracked)
 │       └── shortcomings/
-│           ├── job_<id>.shortcomings.json ← Resume gaps for this job
-│           └── job_<id>.gap_analysis.json ← Gap analysis results
+│           ├── job_<id>.shortcomings.json ← Resume gaps for this job (untracked)
+│           └── job_<id>.gap_analysis.json ← Gap analysis results (untracked)
 ├── user_details/                ← Your profile data (untracked)
-│   ├── resume.md
-│   ├── custom_notes.md
-│   └── SupplementaryData/
+│   ├── resume.md                ← Your markdown resume (untracked)
+│   ├── custom_notes.md          ← Custom additions to your profile (untracked)
+│   ├── SupplementaryData/       ← Your LinkedIn export CSVs (untracked)
+│   ├── skill_gaps_ledger.jsonl  ← Raw Map-Reduce shortcoming inputs (untracked/auto)
+│   └── digested_insights.json   ← Processed clusters and states (untracked/auto)
 └── reference/                   ← Read-only reference repos [SEC-3.1]
 ```
 

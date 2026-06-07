@@ -758,9 +758,12 @@ def digest_ledger(
     stage_params: llm_client.StageParams | None = None
 ) -> dict:
     """
-    Reads the active ledger, chunks new shortcomings by resume_hash,
-    clusters them, merges them with the existing state in digested_insights.json,
-    and moves the processed raw entries to the archive.
+    Map-Reduce Phase 1 & 2: Ledger Digestion
+    Reads the active `skill_gaps_ledger.jsonl`, batches new shortcomings by resume_hash,
+    and maps (clusters) them into partial chunks to conserve LLM tokens.
+    It then reduces (merges) these partial chunks into the final `clustered_skills` 
+    array inside `digested_insights.json`. Processed raw entries are safely archived.
+    
     Returns the loaded/updated digested_insights dict.
     """
     profile_cfg = config.get("user_profile") or {}
@@ -921,8 +924,10 @@ def run_gap_fill(
     stage_params: llm_client.StageParams | None = None
 ) -> dict | None:
     """
-    Pass 3: Final Gap Fill Analysis.
-    Cross-references clustered skills against Supplementary Data.
+    Map-Reduce Phase 3: Final Gap Fill Analysis.
+    Cross-references the finalized `clustered_skills` JSON array against the 
+    user's LinkedIn Supplementary Data to identify 'Quick Wins' (skills to add to resume)
+    and 'Learning Paths' (skills to actually study).
     """
     if not clustered_skills:
         return {"quick_wins": [], "learning_path": []}

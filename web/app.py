@@ -1383,18 +1383,31 @@ def main() -> None:
             except Exception:
                 pass
                 
-        # Load raw shortcomings for prompt export
+        # Load raw shortcomings for prompt export (from active and archive ledgers)
         ledger_path = user_details_dir / "skill_gaps_ledger.jsonl"
-        current_shortcomings = []
-        if ledger_path.exists():
-            with ledger_path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        entry = json.loads(line.strip())
-                        if entry.get("resume_hash") == current_resume_hash:
-                            current_shortcomings.extend(entry.get("shortcomings", []))
-                    except Exception:
-                        pass
+        archive_path = user_details_dir / "skill_gaps_ledger_archive.jsonl"
+        all_gap_entries = []
+        
+        for p in [ledger_path, archive_path]:
+            if p.exists():
+                with p.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            entry = json.loads(line.strip())
+                            if entry.get("resume_hash") == current_resume_hash:
+                                sh = entry.get("shortcomings", [])
+                                if sh:
+                                    all_gap_entries.append({
+                                        "evaluated_at": entry.get("evaluated_at", ""),
+                                        "company": entry.get("company", "Unknown"),
+                                        "job_id": entry.get("job_id", "Unknown"),
+                                        "shortcomings": sh
+                                    })
+                        except Exception:
+                            pass
+                            
+        # Sort newest first
+        all_gap_entries.sort(key=lambda x: x["evaluated_at"], reverse=True)
 
         # --- Middle Section: Historical Misses & Export ---
         
@@ -1417,12 +1430,22 @@ def main() -> None:
                         st.write("None.")
                         
         with col_mid2:
-            if current_shortcomings:
+            if all_gap_entries:
                 with st.expander("📥 Export Raw Gaps for External AI", expanded=False):
                     st.write("Use this prompt with ChatGPT, Claude, or another powerful AI to manually cluster your shortcomings if the local models fail.")
                     
-                    reversed_shortcomings = list(reversed(current_shortcomings))
-                    bullets = "\n".join([f"- {s}" for s in reversed_shortcomings])
+                    bullets_blocks = []
+                    for entry in all_gap_entries:
+                        ts = entry["evaluated_at"][:10] if entry["evaluated_at"] else "Unknown Date"
+                        company = entry["company"]
+                        job_id = entry["job_id"]
+                        
+                        lines = [f"# {ts} | {company} ({job_id})"]
+                        for s in entry["shortcomings"]:
+                            lines.append(f"- {s}")
+                        bullets_blocks.append("\n".join(lines))
+                        
+                    bullets = "\n".join(bullets_blocks)
                     
                     prompt_text = (
                         "You are a career data analyst. Below is a chronological list of shortcomings "
@@ -1433,7 +1456,8 @@ def main() -> None:
                         "Rules:\n"
                         "1. Group similar technologies cohesively.\n"
                         "2. You must be EXHAUSTIVE. Do not ignore any distinct skill.\n"
-                        "3. DO NOT use chain of thought. Output ONLY the JSON.\n\n"
+                        "3. DO NOT use chain of thought. Output ONLY the JSON.\n"
+                        "4. Ignore the comment lines starting with '#'.\n\n"
                         "## Raw Shortcomings to Cluster\n"
                         f"{bullets}"
                     )
@@ -1489,7 +1513,7 @@ def main() -> None:
                 try:
                     parsed = json.loads(edited_json)
                     if not isinstance(parsed, list):
-                        st.error("JSON must be a list of objects.")
+                        st.error("❌ Invalid format. Please ensure you paste a valid JSON array (a list of objects) into the editor above.")
                     else:
                         if selected_hash not in digested:
                             digested[selected_hash] = {}
@@ -1535,7 +1559,7 @@ def main() -> None:
                     clustered = digested.get(current_resume_hash, {}).get("clustered_skills", [])
                     
                     if not clustered:
-                        st.error("❌ Clustered skills list is empty. Please Save JSON or Process Ledger first.")
+                        st.error("❌ Clustered skills list is empty. Please paste your JSON into the editor above and click '💾 Save JSON' before running this step.")
                     else:
                         # 2. Gap Fill
                         result = llm_scorer.run_gap_fill(clustered, config, providers, stage_params_map.get("global_gap_fill"))
@@ -1597,6 +1621,58 @@ def main() -> None:
                 st.success(f"Saved {selected_file_path.name} successfully!")
                 st.cache_data.clear()
                 st.rerun()
+
+        st.markdown("---")
+        st.markdown("### 🧹 State Management")
+        with st.expander("Reset LLM Evaluation State", expanded=False):
+            st.warning("⚠️ This will permanently delete all generated scorecards, shortcomings, and digested insights. Your parsed job descriptions and custom profile data will remain safe. Master ledger relevance will be reset to 0.")
+            if st.button("🧨 Wipe All LLM State"):
+                with st.spinner("Deleting state files..."):
+                    all_paths = config_engine.resolve_output_paths(config)
+                    deleted_files = 0
+                    reset_csvs = 0
+                    
+                    for p in all_paths:
+                        # Scorecards
+                        scorecards_dir = p["scorecards_dir"]
+                        if scorecards_dir.exists():
+                            for f in scorecards_dir.glob("*.json"):
+                                f.unlink()
+                                deleted_files += 1
+                        # Shortcomings
+                        shortcomings_dir = p["shortcomings_dir"]
+                        if shortcomings_dir.exists():
+                            for f in shortcomings_dir.glob("*.json"):
+                                f.unlink()
+                                deleted_files += 1
+                        # Reset Relevance in CSV
+                        csv_path = p["root_dir"] / "master_jobs.csv"
+                        if csv_path.exists():
+                            try:
+                                df = pd.read_csv(csv_path, dtype=str)
+                                if "relevance" in df.columns:
+                                    df["relevance"] = "0"
+                                    lock_csv = str(csv_path) + ".lock"
+                                    with filelock.FileLock(lock_csv, timeout=30):
+                                        df.to_csv(csv_path, index=False)
+                                    reset_csvs += 1
+                            except Exception:
+                                pass
+                                
+                    # Clear User Details insights artifacts
+                    insights_files = ["digested_insights.json", "gap_fill_cache.json", "skill_gaps_ledger.jsonl", "skill_gaps_ledger_archive.jsonl"]
+                    user_details_dir = resume_path.parent
+                    if user_details_dir.exists():
+                        for filename in insights_files:
+                            file_path = user_details_dir / filename
+                            if file_path.exists():
+                                file_path.unlink()
+                                deleted_files += 1
+                                
+                    st.success(f"✅ Deleted {deleted_files} state files and reset {reset_csvs} CSV ledgers.")
+                    time.sleep(2)
+                    st.cache_data.clear()
+                    st.rerun()
 
 
 # ---------------------------------------------------------------------------

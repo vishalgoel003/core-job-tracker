@@ -117,7 +117,7 @@ llm:
   #
   # Rate limit awareness:
   #   - gpt-oss-120b: available on Groq (30 RPM), OpenRouter (20 RPM), Cerebras (5 RPM)
-  #   - Gemini flash models: only 20 RPD — use sparingly, not for batch
+  #   - gemini-3.1-flash-lite: generous limits, excellent for map-reduce processing
   #   - gemma-4-31b-it: 1,500 RPD + unlimited TPM — best Google workhorse
   #   - qwen/qwen3-32b: 60 RPM on Groq — best throughput fallback
   stages:
@@ -162,18 +162,19 @@ llm:
         - "meta-llama/llama-4-scout-17b-16e-instruct"  # Groq — Llama fallback
     global_insights:
       temperature: 0.10               # Low for factual matching and structured output
-      max_tokens: 3500                # Safe limit to prevent 413 Payload Too Large on Groq 120B
+      max_tokens: 3500                # Safe limit to prevent 413 Payload Too Large
       max_sleep_seconds: 60           # Wait up to 60s for top-tier model, prevent map-reduce data loss
       models:
+        - "gemini-3.1-flash-lite"     # Tier 1: Extremely fast and generous limits, perfect for clustering
         - "openai/gpt-oss-120b"       # Tier 1: 120B Dense (Groq)
         - "openai/gpt-oss-120b:free"  # Tier 1: 120B (OpenRouter)
         - "gpt-oss-120b"              # Tier 1: 120B (Cerebras)
-        - "gemini-2.5-flash"          # Tier 2: Massive context & reasoning. Safe to use here because RPD limits won't be exhausted.
-        - "qwen/qwen3-next-80b-a3b-instruct:free"      # Tier 3: High quality 80B
+        - "gemini-2.5-flash"          # Tier 2: Massive context & reasoning. 
+        - "qwen/qwen3-next-80b-a3b-instruct:free"      # Tier 3: High quality 80B fallback
         - "qwen/qwen3-32b"            # Tier 4: Reliable mid-size
-        - "gemma-4-31b-it"            
-        - "google/gemma-4-31b-it:free"   
-        - "meta-llama/llama-4-scout-17b-16e-instruct"
+        - "gemma-4-31b-it"            # Tier 5: Gemma fallback
+        - "google/gemma-4-31b-it:free"# Tier 5: Gemma fallback (OpenRouter)
+        - "meta-llama/llama-4-scout-17b-16e-instruct" # Tier 6: Llama MoE fallback
     global_gap_fill:
       temperature: 0.10               # Low for consistency and accuracy
       max_tokens: 8000                # Massive JSON output needed for the 50-item gap fill
@@ -181,12 +182,12 @@ llm:
       models:
         - "gemma-4-31b-it"               # Tier 1: Gemma excels at cross-referencing massive text
         - "google/gemma-4-31b-it:free"   # Tier 1: Gemma fallback
-        - "qwen/qwen3-32b"            
-        - "qwen/qwen3-next-80b-a3b-instruct:free"      
-        - "openai/gpt-oss-120b"       
-        - "openai/gpt-oss-120b:free"  
-        - "gpt-oss-120b"              
-        - "meta-llama/llama-4-scout-17b-16e-instruct"
+        - "qwen/qwen3-32b"               # Tier 2: Mid-size fast context
+        - "qwen/qwen3-next-80b-a3b-instruct:free" # Tier 2: Qwen fallback
+        - "openai/gpt-oss-120b"          # Tier 3: 120B fallback (if Google is exhausted)
+        - "openai/gpt-oss-120b:free"     # Tier 3: 120B OpenRouter
+        - "gpt-oss-120b"                 # Tier 3: 120B Cerebras
+        - "meta-llama/llama-4-scout-17b-16e-instruct" # Tier 4: Llama MoE
 
 # ── User Profile Paths ──────────────────────────────────────────────────────
 # Used by the LLM scoring pipeline to evaluate resume against job scorecards.
