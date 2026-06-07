@@ -25,6 +25,9 @@ from pathlib import Path
 
 import datetime
 import re
+import time
+import csv
+import uuid
 from collections import defaultdict
 
 import filelock
@@ -194,7 +197,7 @@ def load_all_jobs() -> tuple[pd.DataFrame, float]:
         frames.append(df)
 
     if not frames:
-        import time
+
         return pd.DataFrame(), time.time()
 
     combined = pd.concat(frames, ignore_index=True)
@@ -222,7 +225,7 @@ def load_all_jobs() -> tuple[pd.DataFrame, float]:
         if col in combined.columns:
             combined[col] = combined[col].astype("category")
 
-    import time
+
     return combined, time.time()
 
 
@@ -405,7 +408,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                 current_md = md_path.read_text(encoding="utf-8")
                 new_val    = st.session_state.get(notes_key, "")
                 lock_md = str(md_path) + ".lock"
-                import filelock
+
                 with filelock.FileLock(lock_md, timeout=30):
                     md_path.write_text(_write_notes(current_md, new_val), encoding="utf-8")
 
@@ -461,7 +464,6 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                 "_meta":       gap_result.get("_meta", {})
             }
             lock_p = str(gap_path) + ".lock"
-            import filelock
             with filelock.FileLock(lock_p, timeout=30):
                 gap_path.write_text(
                     json.dumps(gap_payload, indent=2, ensure_ascii=False),
@@ -495,7 +497,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                             if sc:
                                 sc_dir.mkdir(parents=True, exist_ok=True)
                                 lock_p = str(sc_path) + ".lock"
-                                import filelock
+                
                                 with filelock.FileLock(lock_p, timeout=30):
                                     sc_path.write_text(
                                         json.dumps(sc, indent=2, ensure_ascii=False),
@@ -610,7 +612,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                     try:
                         parsed = json.loads(edited_json)
                         lock_p = str(sc_path) + ".lock"
-                        import filelock
+        
                         with filelock.FileLock(lock_p, timeout=30):
                             sc_path.write_text(
                                 json.dumps(parsed, indent=2, ensure_ascii=False),
@@ -637,7 +639,7 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                         if sc:
                             sc_dir.mkdir(parents=True, exist_ok=True)
                             lock_p = str(sc_path) + ".lock"
-                            import filelock
+            
                             with filelock.FileLock(lock_p, timeout=30):
                                 sc_path.write_text(
                                     json.dumps(sc, indent=2, ensure_ascii=False),
@@ -905,7 +907,7 @@ def main() -> None:
     )
 
     # Read last scrape time from CLI metadata (Auto-refreshing fragment)
-    import json
+
     
     # Use st.fragment (or experimental_fragment) if available for background auto-refresh
     fragment_decorator = getattr(st, "fragment", getattr(st, "experimental_fragment", None))
@@ -929,7 +931,7 @@ def main() -> None:
             # Check if background scrape happened after our UI data was loaded
             if last_scrape_time.timestamp() > df_load_time:
                 st.warning("🔄 **New Data Available:** A scrape finished in the background! Click **🔄 Refresh Data** in the sidebar to load the latest jobs.")
-            elif hours_since > 12:
+            elif hours_since > 4:
                 st.warning(f"⚠️ **Stale Data Alert:** It has been **{hours_since:.1f} hours** since your last scrape. Click **🚀 Run Scraper** in the sidebar to fetch fresh jobs.")
             else:
                 st.caption(f"Last fetched data **{hours_since:.1f} hours ago**.")
@@ -969,6 +971,9 @@ def main() -> None:
     # TAB 1 — Active Radar
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with tab_active:
+        if "manual_action_success" in st.session_state:
+            st.success(st.session_state.pop("manual_action_success"))
+            
         if active_df.empty:
             st.info("No active jobs match your filters. Try broadening your search.")
         else:
@@ -988,11 +993,11 @@ def main() -> None:
                 )
                 
                 col1, col2, col3, col4, col5 = st.columns([1.2, 1, 1, 1.2, 3])
-                submit_applied = col1.form_submit_button("✅ Mark Applied", type="primary")
-                submit_skipped = col2.form_submit_button("🚫 Mark Skipped")
-                submit_score   = col3.form_submit_button("🤖 Bulk Score")
-                submit_delete  = col4.form_submit_button("🗑️ Delete (Manual)")
-                submit_save    = col5.form_submit_button("💾 Save")
+                submit_applied = col1.form_submit_button("✅ Mark Applied", type="primary", help="Move selected jobs to the Sent Applications tab.")
+                submit_skipped = col2.form_submit_button("🚫 Mark Skipped", help="Move selected jobs to the Archive & Skipped tab.")
+                submit_score   = col3.form_submit_button("🤖 Bulk Score", help="Run LLM evaluation on all selected jobs.")
+                submit_delete  = col4.form_submit_button("🗑️ Delete (Manual)", help="Permanently delete selected Manual jobs. Does not work on Workday jobs.")
+                submit_save    = col5.form_submit_button("💾 Save Relevance Edits", help="Save inline edits made to the Relevance column without moving the jobs.")
 
             if submit_delete:
                 selected_jobs = [active_df.iloc[i] for i in range(len(edited)) if edited.iloc[i]["selected"]]
@@ -1001,12 +1006,15 @@ def main() -> None:
                     if non_manual:
                         st.error("❌ Bulk Delete is strictly restricted to Manual jobs. Please deselect Workday jobs.")
                     else:
-                        for row in selected_jobs:
-                            job_id = row["job_id"]
-                            # Delete files
-                            config_del = config_engine.load_config("config.yaml")
-                            base_dir_del = Path(config_del["global_settings"]["output_base_dir"])
-                            manual_root = base_dir_del / "Manual"
+                        config_del = config_engine.load_config("config.yaml")
+                        base_dir_del = Path(config_del["global_settings"]["output_base_dir"])
+                        manual_root = base_dir_del / "Manual"
+                        csv_path = manual_root / "master_jobs.csv"
+                        
+                        job_ids_to_delete = {row["job_id"] for row in selected_jobs}
+                        
+                        # Delete files
+                        for job_id in job_ids_to_delete:
                             md_path = manual_root / "job_details" / f"job_{job_id}.md"
                             sc_path = manual_root / "scorecards" / f"job_{job_id}.scorecard.json"
                             sh_path = manual_root / "shortcomings" / f"job_{job_id}.shortcomings.json"
@@ -1017,27 +1025,26 @@ def main() -> None:
                                         p.unlink()
                                     except Exception:
                                         pass
-                                    
-                            # Remove from CSV
-                            csv_path = manual_root / "master_jobs.csv"
-                            if csv_path.exists():
-                                import csv
+                                        
+                        # Update CSV once
+                        if csv_path.exists():
+
+            
+                            lock_path = str(csv_path) + ".lock"
+                            with filelock.FileLock(lock_path, timeout=30):
                                 ledger = {}
                                 with csv_path.open("r", encoding="utf-8") as f:
                                     for r in csv.DictReader(f):
-                                        if r["job_id"] != job_id:
+                                        if r["job_id"] not in job_ids_to_delete:
                                             ledger[r["job_id"]] = r
                                             
-                                import filelock
-                                lock_path = str(csv_path) + ".lock"
-                                with filelock.FileLock(lock_path, timeout=30):
-                                    with csv_path.open("w", newline="", encoding="utf-8") as f:
-                                        writer = csv.DictWriter(f, fieldnames=config_engine.CSV_COLUMNS, extrasaction="ignore")
-                                        writer.writeheader()
-                                        for r in ledger.values():
-                                            writer.writerow(r)
-                                            
-                        st.success(f"Deleted {len(selected_jobs)} manual job(s).")
+                                with csv_path.open("w", newline="", encoding="utf-8") as f:
+                                    writer = csv.DictWriter(f, fieldnames=config_engine.CSV_COLUMNS, extrasaction="ignore")
+                                    writer.writeheader()
+                                    for r in ledger.values():
+                                        writer.writerow(r)
+                                        
+                        st.session_state["manual_action_success"] = f"Deleted {len(selected_jobs)} manual job(s)."
                         st.cache_data.clear()
                         st.rerun()
 
@@ -1120,9 +1127,9 @@ def main() -> None:
                 )
                 
                 col1, col2, col3 = st.columns([1, 1, 4])
-                submit_undo = col1.form_submit_button("↩️ Undo Applied")
-                submit_reject = col2.form_submit_button("🚫 Mark as Rejected (Skip)")
-                submit_save_rel = col3.form_submit_button("💾 Save Relevance")
+                submit_undo = col1.form_submit_button("↩️ Undo Applied", help="Move selected jobs back to Active Radar.")
+                submit_reject = col2.form_submit_button("🚫 Mark as Rejected (Skip)", help="Move selected jobs to Archive & Skipped.")
+                submit_save_rel = col3.form_submit_button("💾 Save Relevance Edits", help="Save inline edits made to the Relevance column.")
 
             if submit_undo or submit_save_rel or submit_reject:
                 changes: list[dict] = []
@@ -1188,7 +1195,7 @@ def main() -> None:
                     num_rows="fixed",
                     key="tab4_editor",
                 )
-                submit_undo_skip = st.form_submit_button("↩️ Restore Selected to Active Radar")
+                submit_undo_skip = st.form_submit_button("↩️ Restore Selected to Active Radar", help="Move selected jobs back to the Active Radar tab.")
 
             if submit_undo_skip:
                 changes: list[dict] = []
@@ -1255,7 +1262,7 @@ def main() -> None:
             if not man_company.strip() or not man_title.strip() or not man_desc.strip():
                 st.error("Company, Title, and Description are required.")
             else:
-                import uuid
+
                 manual_id = f"MANUAL-{uuid.uuid4().hex[:8].upper()}"
                 
                 # Format markdown
@@ -1284,7 +1291,7 @@ def main() -> None:
                 
                 csv_path = manual_root / "master_jobs.csv"
                 ledger = {}
-                import csv
+
                 if csv_path.exists():
                     with csv_path.open("r", encoding="utf-8") as f:
                         for row in csv.DictReader(f):
@@ -1301,7 +1308,7 @@ def main() -> None:
                     "skipped": ""
                 }
                 
-                import filelock
+
                 lock_path = str(csv_path) + ".lock"
                 with filelock.FileLock(lock_path, timeout=30):
                     with csv_path.open("w", newline="", encoding="utf-8") as f:

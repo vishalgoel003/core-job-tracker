@@ -23,6 +23,9 @@ AGENT.md compliance:
 
 import argparse
 import csv
+import os
+import time
+import requests
 import datetime
 import hashlib
 import json
@@ -224,7 +227,9 @@ Your output JSON must have this exact structure:
 
 Rules:
 1. Group similar technologies and concepts cohesively.
-2. Output ONLY valid JSON. No explanations, no markdown fences."""
+2. Output ONLY valid JSON. No explanations, no markdown fences.
+3. CRITICAL: Your output MUST be a flat JSON array of objects. Do NOT nest objects or wrap the array in a dictionary.
+4. CRITICAL: You must be EXHAUSTIVE. Do NOT drop or ignore any skills from the input. Every distinct shortcoming must be represented in the final array, even if its count is 1."""
 
 MERGE_CLUSTERS_SYSTEM_PROMPT = """You are a career data analyst. Given multiple JSON lists of missing skills and their counts, merge them into a single unified list.
 
@@ -240,7 +245,8 @@ Rules:
 1. Merge skills that mean the exact same thing (e.g., "AWS Cloud" and "Amazon Web Services").
 2. Sort the final array by `count` descending.
 3. Output ONLY valid JSON. No explanations, no markdown fences.
-4. CRITICAL: Your output MUST be a flat JSON array of objects. Do NOT nest objects or wrap the array in a dictionary."""
+4. CRITICAL: Your output MUST be a flat JSON array of objects. Do NOT nest objects or wrap the array in a dictionary.
+5. CRITICAL: You must be EXHAUSTIVE. Do NOT drop or ignore any skills from the input lists. Every single skill provided in the input lists MUST exist in your final merged output. Add their counts together if merging."""
 
 GAP_FILL_SYSTEM_PROMPT = """You are a career data analyst. Given a list of clustered shortcomings (skills missing from the candidate's resume) and the candidate's Supplementary Data, determine if the candidate actually possesses these skills.
 
@@ -635,6 +641,16 @@ def _cluster_shortcomings_chunk(
         validator_fn=lambda t: llm_client.extract_json(t) is not None,
     )
     
+
+    if os.environ.get("DEBUG_INSIGHTS_LOG", "0") == "1":
+        debug_log = Path("logs/insight_pipeline_debug.log")
+        debug_log.parent.mkdir(exist_ok=True)
+        with debug_log.open("a", encoding="utf-8") as f:
+            f.write(f"\\n{'='*80}\\n")
+            f.write(f"CLUSTER CHUNK INPUT:\\n{user_prompt}\\n")
+            f.write(f"\\nCLUSTER CHUNK RAW OUTPUT ({used_provider.name if used_provider else 'none'}):\\n{raw_text}\\n")
+            f.write(f"{'='*80}\\n")
+    
     if not raw_text:
         return None
     return llm_client.extract_json(raw_text)
@@ -664,6 +680,16 @@ def _merge_clustered_skills(
         json_mode=True,
         validator_fn=lambda t: llm_client.extract_json(t) is not None,
     )
+    
+
+    if os.environ.get("DEBUG_INSIGHTS_LOG", "0") == "1":
+        debug_log = Path("logs/insight_pipeline_debug.log")
+        debug_log.parent.mkdir(exist_ok=True)
+        with debug_log.open("a", encoding="utf-8") as f:
+            f.write(f"\\n{'*'*80}\\n")
+            f.write(f"MERGE CLUSTERS INPUT:\\n{user_prompt}\\n")
+            f.write(f"\\nMERGE CLUSTERS RAW OUTPUT ({used_provider.name if used_provider else 'none'}):\\n{raw_text}\\n")
+            f.write(f"{'*'*80}\\n")
     
     if not raw_text:
         return None
@@ -739,6 +765,10 @@ def digest_ledger(
         # Merge
         final_list = _merge_clustered_skills(clustered_lists, providers, stage_params) or []
         
+        # Auto-correct if the LLM returned a single dict instead of a list
+        if isinstance(final_list, dict):
+            final_list = [final_list]
+        
         digested[r_hash] = {
             "last_updated": datetime.datetime.now().isoformat(),
             "clustered_skills": final_list
@@ -801,15 +831,15 @@ def run_gap_fill(
     parsed = llm_client.extract_json(raw_text)
     if parsed:
         # Strictly filter out hallucinated skills that were not in the input list
-        valid_skills = {item.get("skill", "").lower() for item in clustered_skills if "skill" in item}
+        valid_skills = {item.get("skill", "").lower() for item in clustered_skills if isinstance(item, dict) and "skill" in item}
         
         parsed["quick_wins"] = [
             item for item in parsed.get("quick_wins", [])
-            if item.get("skill", "").lower() in valid_skills
+            if isinstance(item, dict) and item.get("skill", "").lower() in valid_skills
         ]
         parsed["learning_path"] = [
             item for item in parsed.get("learning_path", [])
-            if item.get("skill", "").lower() in valid_skills
+            if isinstance(item, dict) and item.get("skill", "").lower() in valid_skills
         ]
         
         parsed["_meta"] = {
@@ -977,20 +1007,21 @@ def score_job(
             )
         print(f"  [SCORER] Shortcomings saved → {shortcomings_path}")
 
-        # 5.5 Append/Update global skill gaps ledger
-        try:
-            ledger_path = resume_path.parent / "skill_gaps_ledger.jsonl"
-            ledger_entry = {
-                "job_id": job_id,
-                "company": company_name,
-                "evaluated_at": shortcomings_data["evaluated_at"],
-                "resume_hash": resume_hash,
-                "shortcomings": shortcomings,
-                "_meta": evaluation.get("_meta", {})
-            }
-            _update_ledger(ledger_path, ledger_entry)
-        except Exception as e:
-            print(f"  [SCORER] WARNING: Failed to update ledger: {e}")
+        # 5.5 Append/Update global skill gaps ledger only if there are gaps
+        if shortcomings:
+            try:
+                ledger_path = resume_path.parent / "skill_gaps_ledger.jsonl"
+                ledger_entry = {
+                    "job_id": job_id,
+                    "company": company_name,
+                    "evaluated_at": shortcomings_data["evaluated_at"],
+                    "resume_hash": resume_hash,
+                    "shortcomings": shortcomings,
+                    "_meta": evaluation.get("_meta", {})
+                }
+                _update_ledger(ledger_path, ledger_entry)
+            except Exception as e:
+                print(f"  [SCORER] WARNING: Failed to update ledger: {e}")
 
 
     # 6. Update CSV relevance via filelock
@@ -1070,7 +1101,7 @@ def score_all_unscored(
 
         print(f"  [{name}] {len(unscored)} unscored job(s) to process.")
 
-        import time
+
         for i, job_id in enumerate(unscored):
             print(f"\n  [{name}] Scoring {i+1}/{len(unscored)}: {job_id}")
             result = score_job(name, job_id, config)
@@ -1100,7 +1131,6 @@ def run_debug_matrix(config: dict) -> None:
     Uses a short, standardized test JD for scorecard, a minimal
     scorecard+resume for evaluation, and minimal shortcomings for gap_analysis.
     """
-    import time as _time
 
     providers, stage_params_map = llm_client.load_llm_config(config)
     if not providers:
@@ -1210,12 +1240,11 @@ def run_debug_matrix(config: dict) -> None:
 
                     print(f"  [DEBUG] {stage_name} | {provider.name} | {model} | key={key_label} ... ", end="", flush=True)
 
-                    t0 = _time.time()
+                    t0 = time.time()
                     try:
-                        import requests as _requests
-                        resp = _requests.post(url, json=body, headers=headers, timeout=60)
+                        resp = requests.post(url, json=body, headers=headers, timeout=60)
                         entry["http_status"] = resp.status_code
-                        entry["response_ms"] = int((_time.time() - t0) * 1000)
+                        entry["response_ms"] = int((time.time() - t0) * 1000)
 
                         if resp.status_code == 200:
                             resp_json = resp.json()
@@ -1243,7 +1272,7 @@ def run_debug_matrix(config: dict) -> None:
                         else:
                             entry["error"] = resp.text[:200]
                     except Exception as exc:
-                        entry["response_ms"] = int((_time.time() - t0) * 1000)
+                        entry["response_ms"] = int((time.time() - t0) * 1000)
                         entry["error"] = str(exc)[:200]
 
                     # Print inline result
@@ -1257,7 +1286,7 @@ def run_debug_matrix(config: dict) -> None:
                     results.append(entry)
 
                     # Polite delay
-                    _time.sleep(2)
+                    time.sleep(2)
 
     # --- Print summary matrix ---
     print(f"\n{'='*90}")

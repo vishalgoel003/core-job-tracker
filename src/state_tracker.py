@@ -42,6 +42,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import json
+import filelock
 
 try:
     from . import config_engine       # when imported as part of the src package
@@ -198,7 +200,7 @@ def write_ledger(ledger: dict[str, dict], csv_path: Path) -> None:
                   silently dropped (extrasaction='ignore').
     """
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    import filelock
+
 
     lock_path = str(csv_path) + ".lock"
     with filelock.FileLock(lock_path, timeout=30):
@@ -291,7 +293,7 @@ def write_job_detail(
 """
 
     md_path.parent.mkdir(parents=True, exist_ok=True)
-    import filelock
+
     lock_md = str(md_path) + ".lock"
     with filelock.FileLock(lock_md, timeout=30):
         md_path.write_text(content, encoding="utf-8")
@@ -581,7 +583,7 @@ def main() -> None:
     print()
     
     # Save scrape metadata for UI
-    import json
+
     base_dir = Path(config["global_settings"]["output_base_dir"])
     metadata_path = base_dir / "scrape_metadata.json"
     metadata_path.parent.mkdir(parents=True, exist_ok=True)

@@ -22,12 +22,14 @@ echo "Copying Docker configuration..."
 mkdir -p "$STAGING_DIR/deploy"
 cp deploy/Dockerfile "$STAGING_DIR/deploy/"
 cp deploy/docker-compose.yml "$STAGING_DIR/deploy/"
+cp deploy/start.sh "$STAGING_DIR/deploy/"
 
 # 3. Copy Required State Data
 echo "Copying state data..."
 cp config.yaml "$STAGING_DIR/"
 cp -r targets "$STAGING_DIR/"
 cp -r user_details "$STAGING_DIR/"
+mkdir -p "$STAGING_DIR/logs"
 
 # 4. Generate Launch Script
 echo "Generating launch script..."
@@ -43,7 +45,12 @@ chmod +x "$STAGING_DIR/unpack_and_run.sh"
 # Zip everything up
 echo "Creating release.zip..."
 cd "$STAGING_DIR"
-zip -r ../release.zip *
+if command -v zip &> /dev/null; then
+    zip -r ../release.zip ./*
+else
+    echo "zip command not found! Falling back to Python zipfile module..."
+    python -m zipfile -c ../release.zip ./*
+fi
 cd ..
 
 # Cleanup

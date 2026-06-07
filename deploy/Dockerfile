@@ -14,8 +14,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy static application code
 COPY src/ ./src/
 COPY web/ ./web/
+COPY deploy/start.sh ./deploy/start.sh
+
+# Make start script executable
+RUN chmod +x deploy/start.sh
 
 # Streamlit exposes port 8501 by default
 EXPOSE 8501
 
-ENTRYPOINT ["streamlit", "run", "web/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+ENTRYPOINT ["./deploy/start.sh"]

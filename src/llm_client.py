@@ -462,7 +462,6 @@ def _extract_response_text(adapter: str, response_json: dict) -> str | None:
 
     if not result:
         print(f"  [DEBUG-EXTRACT] Failed to extract text for {adapter}. Raw JSON:")
-        import json
         print(f"  {json.dumps(response_json)[:500]}")
         
     return result

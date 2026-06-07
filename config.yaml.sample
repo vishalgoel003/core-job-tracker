@@ -2,6 +2,7 @@ global_settings:
   output_base_dir: "./targets"
   default_relevance: 0
   max_parallel_scrapers: 4          # Max concurrent company scraping threads
+  scraper_interval_hours: 12        # How often the automated background scheduler runs
 
 # ── LLM Provider Configuration ──────────────────────────────────────────────
 # Routing: Model-First Cascade

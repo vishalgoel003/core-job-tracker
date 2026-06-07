@@ -4,3 +4,4 @@ html2text
 streamlit>=1.35.0
 pandas
 filelock
+schedule

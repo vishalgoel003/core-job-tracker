@@ -11,7 +11,7 @@ A self-hosted, multi-company job application CRM built entirely in Python. Scrap
 | **Scraper** | Stateful `requests.Session` pagination against Workday's CXS API. Handles WAF cookie reuse, 130s timeouts, and inter-page delays. Parallel multi-company scraping via `ThreadPoolExecutor`. |
 | **State Tracking** | 3-way reconciliation (New / Updated / Delisted). Self-healing `.md` file checks. "Late Write" CSV pattern populates authoritative HR posting dates. |
 | **Rich Job Files** | Per-job `.md` files with metadata table (Posted Date, Age, Deadline), full HTML-to-Markdown job description via `html2text`, and an editable `## Notes` section. |
-| **Web UI** | Streamlit 6-Tab CRM: Active Radar · Sent · Archived · Skipped · Insights · Settings. Inline applied date-stamping, relevance scoring, and `filelock` safe write-back. |
+| **Web UI** | Streamlit 6-Tab CRM: Active Radar · Sent · Archive & Skipped · Manual Entry · Insights · Settings. Inline applied date-stamping, relevance scoring, and `filelock` safe write-back. |
 | **LLM Scorer** | On-demand scorecard generation + resume evaluation using free-tier cloud APIs (Groq, Gemini, Cerebras) or local models (Ollama/LM Studio). Provider cascade with smart rate-limit header awareness. |
 | **Gap Analysis** | Supplementary data cross-referencing against identified shortcomings — shows what gaps your Supplementary data can cover before applying. |
 
@@ -85,6 +85,22 @@ Before scoring jobs, you must populate your `user_details/` folder:
 
 ---
 
+## Troubleshooting & Debugging
+
+If you encounter issues with the MapReduce Gap Fill pipeline (e.g., the LLM is aggressively dropping skills or hallucinating arrays), you can turn on deep logging to inspect the exact input/output payloads being sent to the LLM.
+
+```bash
+# In Git Bash (or Linux/Mac), run Streamlit with this flag:
+DEBUG_INSIGHTS_LOG=1 streamlit run web/app.py
+```
+
+This will create `logs/insight_pipeline_debug.log` containing the complete prompts and raw JSON responses. Use this to verify if the LLM is disobeying prompt instructions. 
+
+**Note on Local Imports:**
+The codebase has been refactored to strictly avoid local `import` statements within functions. If modifying `app.py` or `llm_scorer.py`, keep all imports at the global file level to prevent Python `UnboundLocalError`.
+
+---
+
 ## Project Structure
 
 ```
@@ -96,6 +112,8 @@ core-job-tracker/
 ├── requirements.txt
 ├── .gitignore
 ├── deploy/                      ← Docker configuration & OCI packaging scripts
+│   └── docker-compose.prod.yml  ← Native cloud deployment config
+├── logs/                        ← Internal rotated logs (scraper.log, scorer.log)
 ├── src/
 │   ├── __init__.py
 │   ├── config_engine.py     ← Config loader + path resolver
@@ -239,7 +257,7 @@ Opens in a new browser tab via URL routing (fully compatible with Cloudflare Tun
 python src/state_tracker.py
 ```
 
-> The "🚀 Run Scraper" button in the Streamlit sidebar calls this same command via `subprocess.run`.
+> The "🚀 Run Scraper" button in the Streamlit sidebar calls this same command detached via `subprocess.Popen`.
 
 ---
 
@@ -316,8 +334,8 @@ The script will natively build the ARM64 image using your OCI server's hardware 
 - [x] Task 8: LLM `--debug` matrix mode — force-test all models × providers × stages to generate a success-rate matrix. Implement JSON-mode fallback extractor to handle strict-mode 400 errors from providers like Groq.
 - [x] Task 9: Native Dockerization & OCI remote packaging strategy
 - [x] Task 10: Manual Jobs Pipeline (Isolated UI-driven tracking for non-Workday external jobs)
-- [ ] Task 11: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
-- [ ] Task 12: Automated daily scraper scheduler
+- [x] Task 11: Automated daily scraper scheduler
+- [ ] Task 12: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
 - [ ] Task 13: Fully automated async scoring pipeline
 - [ ] Task 14: Phase 2 API Migration (FastAPI backend + Next.js frontend)
 

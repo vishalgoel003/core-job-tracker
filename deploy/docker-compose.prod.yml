@@ -8,6 +8,9 @@ services:
       - ./config.yaml:/app/config.yaml
       - ./targets:/app/targets
       - ./user_details:/app/user_details
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Kolkata
     networks:
       - app_network
     logging:
