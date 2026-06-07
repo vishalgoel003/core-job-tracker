@@ -622,6 +622,7 @@ def call_llm(
                 key_label = f"...{api_key[-4:]}" if api_key else "local"
                 print(f"  [LLM] Trying {provider.name} ({model}) key={key_label} ...")
 
+                response = None
                 # Small retry loop for 5XX and 429 smart-sleep
                 for attempt in range(2):
                     try:
@@ -761,6 +762,7 @@ def call_llm(
                 return text, provider, model
 
     print("  [LLM] All models × providers × keys exhausted. No response obtained.")
+    return None, None, None
 
 
 # ---------------------------------------------------------------------------

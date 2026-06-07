@@ -234,7 +234,8 @@ Rules:
 2. Output ONLY valid JSON. No explanations, no markdown fences.
 3. CRITICAL: Your output MUST be a flat JSON array of objects. Do NOT nest objects or wrap the array in a dictionary.
 4. CRITICAL: You must be EXHAUSTIVE. Do NOT drop or ignore any skills from the input. Every distinct shortcoming must be represented in the final array, even if its count is 1.
-5. CRITICAL: Output the JSON in a minified, compact format (no unnecessary spaces, newlines, or indentation) to save output tokens."""
+5. CRITICAL: DO NOT use chain-of-thought reasoning. Do not output your thinking process or scratchpad. Start your response directly with the JSON array `[` and end with `]`. Any text outside of the JSON will cause a system failure.
+6. CRITICAL: Output the JSON in a minified, compact format (no unnecessary spaces, newlines, or indentation) to save output tokens."""
 
 MERGE_CLUSTERS_SYSTEM_PROMPT = """You are a career data analyst. Given multiple JSON lists of missing skills and their counts, merge them into a single unified list.
 
@@ -252,7 +253,8 @@ Rules:
 3. Output ONLY valid JSON. No explanations, no markdown fences.
 4. CRITICAL: Your output MUST be a flat JSON array of objects. Do NOT nest objects or wrap the array in a dictionary.
 5. CRITICAL: You must be EXHAUSTIVE. Do NOT drop or ignore any skills from the input lists. Every single skill provided in the input lists MUST exist in your final merged output. Add their counts together if merging.
-6. CRITICAL: Output the JSON in a minified, compact format (no unnecessary spaces, newlines, or indentation) to save output tokens."""
+6. CRITICAL: DO NOT use chain-of-thought reasoning. Do not output your thinking process or scratchpad. Start your response directly with the JSON array `[` and end with `]`. Any text outside of the JSON will cause a system failure.
+7. CRITICAL: Output the JSON in a minified, compact format (no unnecessary spaces, newlines, or indentation) to save output tokens."""
 
 GAP_FILL_SYSTEM_PROMPT = """You are a career data analyst. Given a list of clustered shortcomings (skills missing from the candidate's resume) and the candidate's Supplementary Data, determine if the candidate actually possesses these skills.
 
@@ -407,10 +409,26 @@ def generate_scorecard(
         scorecard = llm_client.extract_json(text)
         if not scorecard or not isinstance(scorecard, dict):
             return False
-        if "pillars" not in scorecard:
+        
+        pillars = scorecard.get("pillars")
+        if not pillars or not isinstance(pillars, dict):
             return False
-        if not scorecard["pillars"]:
+            
+        # Enforce a strict minimum requirement count to catch lazy model extractions
+        total_reqs = 0
+        for p in pillars.values():
+            if not isinstance(p, dict):
+                return False
+            reqs = p.get("req", [])
+            if not isinstance(reqs, list):
+                return False
+            total_reqs += len(reqs)
+            
+        # If an LLM returns fewer than 4 total skills across all pillars, 
+        # it has collapsed/hallucinated and missed the JD requirements.
+        if total_reqs < 4:
             return False
+            
         return True
 
     raw_text, used_provider, used_model = llm_client.call_llm(
@@ -650,6 +668,14 @@ def _cluster_shortcomings_chunk(
     params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=1500)
     user_prompt = "## Raw Shortcomings to Cluster\n\n" + "\n".join(f"- {s}" for s in chunk)
     
+    def validate_cluster(text):
+        data = llm_client.extract_json(text)
+        if not isinstance(data, list) or len(data) == 0:
+            return False
+        if not ("skill" in data[0] and "count" in data[0]):
+            return False
+        return True
+
     raw_text, used_provider, used_model = llm_client.call_llm(
         providers=providers,
         system_prompt=CLUSTER_CHUNK_SYSTEM_PROMPT,
@@ -657,7 +683,7 @@ def _cluster_shortcomings_chunk(
         stage="global_insights",
         stage_params=params,
         json_mode=True,
-        validator_fn=lambda t: llm_client.extract_json(t) is not None,
+        validator_fn=validate_cluster,
     )
     
 
@@ -690,6 +716,18 @@ def _merge_clustered_skills(
     for i, lst in enumerate(lists_to_merge):
         user_prompt += f"### List {i+1}\n```json\n{json.dumps(lst, separators=(',', ':'))}\n```\n\n"
     
+    def validate_merge(text):
+        data = llm_client.extract_json(text)
+        if not isinstance(data, list) or len(data) == 0:
+            return False
+        if not ("skill" in data[0] and "count" in data[0]):
+            return False
+        # Hard validation against lazy LLM collapse
+        # If we are merging multiple lists, we expect the output to be somewhat comprehensive
+        if len(lists_to_merge) > 1 and len(data) < 3:
+            return False
+        return True
+
     raw_text, used_provider, used_model = llm_client.call_llm(
         providers=providers,
         system_prompt=MERGE_CLUSTERS_SYSTEM_PROMPT,
@@ -697,7 +735,7 @@ def _merge_clustered_skills(
         stage="global_insights",
         stage_params=params,
         json_mode=True,
-        validator_fn=lambda t: llm_client.extract_json(t) is not None,
+        validator_fn=validate_merge,
     )
     
 
@@ -739,93 +777,140 @@ def digest_ledger(
         except Exception:
             pass
             
-    if not ledger_path.exists():
-        return digested
+    # Initialize partial_chunks if missing
+    for k, v in digested.items():
+        if "partial_chunks" not in v:
+            v["partial_chunks"] = []
+            
+    # =========================================================================
+    # PHASE 1: MAP (Cluster raw ledger entries into partial chunks)
+    # =========================================================================
+    if ledger_path.exists():
+        raw_lines_by_hash: dict[str, list[str]] = {}
         
-    # Read active ledger
-    new_entries_by_hash: dict[str, list[str]] = {}
-    lines_to_archive = []
-    with ledger_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                entry = json.loads(line.strip())
-                r_hash = entry.get("resume_hash", "unknown")
-                shortcomings = entry.get("shortcomings", [])
-                if r_hash not in new_entries_by_hash:
-                    new_entries_by_hash[r_hash] = []
-                new_entries_by_hash[r_hash].extend(shortcomings)
-                lines_to_archive.append(line.strip())
-            except Exception:
-                continue
+        with ledger_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line.strip())
+                    r_hash = entry.get("resume_hash", "unknown")
+                    if r_hash not in raw_lines_by_hash:
+                        raw_lines_by_hash[r_hash] = []
+                    raw_lines_by_hash[r_hash].append(line.strip())
+                except Exception:
+                    continue
+                    
+        lines_to_archive = []
+        lines_to_keep = []
+        
+        for r_hash, lines in raw_lines_by_hash.items():
+            # Batch lines so we process ~25 shortcomings per LLM call
+            batches = []
+            current_batch_lines = []
+            current_batch_shortcomings = []
+            
+            for line in lines:
+                try:
+                    entry = json.loads(line)
+                    sh = entry.get("shortcomings", [])
+                    current_batch_lines.append(line)
+                    current_batch_shortcomings.extend(sh)
+                    
+                    if len(current_batch_shortcomings) >= 25:
+                        batches.append((current_batch_lines, current_batch_shortcomings))
+                        current_batch_lines = []
+                        current_batch_shortcomings = []
+                except Exception:
+                    lines_to_keep.append(line)
+                    
+            if current_batch_lines:
+                batches.append((current_batch_lines, current_batch_shortcomings))
                 
-    if not lines_to_archive:
-        return digested
-        
-    # Process each resume hash
-    for r_hash, shortcomings in new_entries_by_hash.items():
-        if not shortcomings:
+            for batch_lines, batch_sh in batches:
+                if not batch_sh:
+                    lines_to_archive.extend(batch_lines)
+                    continue
+                    
+                res, p, m = _cluster_shortcomings_chunk(batch_sh, providers, stage_params)
+                
+                if res:
+                    if r_hash not in digested:
+                        digested[r_hash] = {
+                            "last_updated": datetime.datetime.now().isoformat(),
+                            "clustered_skills": [],
+                            "partial_chunks": []
+                        }
+                    digested[r_hash]["partial_chunks"].append(res)
+                    lines_to_archive.extend(batch_lines)
+                else:
+                    # If this specific batch fails, keep its lines in the ledger
+                    lines_to_keep.extend(batch_lines)
+                
+        # Archive successful lines
+        if lines_to_archive:
+            with archive_path.open("a", encoding="utf-8") as fa:
+                for line in lines_to_archive:
+                    fa.write(line + "\n")
+                    
+        # Write back unmapped lines
+        lock_ledger = str(ledger_path) + ".lock"
+        with filelock.FileLock(lock_ledger, timeout=30):
+            if lines_to_keep:
+                ledger_path.write_text("\n".join(lines_to_keep) + "\n", encoding="utf-8")
+            else:
+                ledger_path.write_text("", encoding="utf-8")
+
+        # Save Digested (with new partial chunks) safely before reduce
+        lock_digested = str(digested_path) + ".lock"
+        with filelock.FileLock(lock_digested, timeout=30):
+            digested_path.write_text(json.dumps(digested, indent=2), encoding="utf-8")
+
+    # =========================================================================
+    # PHASE 2: REDUCE (Merge partial chunks into clustered_skills)
+    # =========================================================================
+    made_changes = False
+    for r_hash, data in digested.items():
+        partial_chunks = data.get("partial_chunks", [])
+        if not partial_chunks:
             continue
             
-        # Chunking (e.g., 25 per chunk)
-        chunk_size = 25
-        chunks = [shortcomings[i:i + chunk_size] for i in range(0, len(shortcomings), chunk_size)]
+        existing_skills = data.get("clustered_skills", [])
         
-        clustered_lists = []
-        last_prov, last_mod = "unknown", "unknown"
-        for c in chunks:
-            res, p, m = _cluster_shortcomings_chunk(c, providers, stage_params)
-            if res:
-                clustered_lists.append(res)
-                last_prov = p.name if p else "unknown"
-                last_mod = m if m else "unknown"
-                
-        # Existing state
-        existing_state = digested.get(r_hash, {}).get("clustered_skills", [])
-        if existing_state:
-            clustered_lists.append(existing_state)
+        # Combine partials and existing for merging
+        lists_to_merge = partial_chunks.copy()
+        if existing_skills:
+            lists_to_merge.append(existing_skills)
             
-        # Merge
-        final_list = []
-        merge_prov, merge_model = last_prov, last_mod
-        if len(clustered_lists) == 1:
-            final_list = clustered_lists[0]
-        elif len(clustered_lists) > 1:
-            merge_res, p, m = _merge_clustered_skills(clustered_lists, providers, stage_params)
-            final_list = merge_res or []
-            merge_prov = p.name if p else "unknown"
-            merge_model = m if m else "unknown"
-        
-        # Auto-correct if the LLM returned a single dict instead of a list
-        if isinstance(final_list, dict):
-            final_list = [final_list]
-            
-        # Hard validation: If we processed multiple shortcomings but the LLM violently summarized it 
-        # to less than 3 skills, it likely hallucinated. Reject it to prevent data loss.
-        if len(new_entries_by_hash.get(r_hash, [])) > 10 and len(final_list) < 3:
-            print(f"[MapReduce ERROR] LLM {merge_prov}/{merge_model} returned suspiciously short array ({len(final_list)} items). Rejecting to prevent data loss.")
+        if len(lists_to_merge) == 1:
+            data["clustered_skills"] = lists_to_merge[0]
+            data["partial_chunks"] = []
+            data["last_updated"] = datetime.datetime.now().isoformat()
+            made_changes = True
             continue
-        
-        digested[r_hash] = {
-            "last_updated": datetime.datetime.now().isoformat(),
-            "last_provider": merge_prov,
-            "last_model": merge_model,
-            "clustered_skills": final_list
-        }
-        
-    # Save digested
-    lock_digested = str(digested_path) + ".lock"
-    with filelock.FileLock(lock_digested, timeout=30):
-        digested_path.write_text(json.dumps(digested, indent=2), encoding="utf-8")
-    
-    # Archive processed lines
-    with archive_path.open("a", encoding="utf-8") as fa:
-        for line in lines_to_archive:
-            fa.write(line + "\n")
             
-    # Clear active ledger safely
-    lock_ledger = str(ledger_path) + ".lock"
-    with filelock.FileLock(lock_ledger, timeout=30):
-        ledger_path.write_text("", encoding="utf-8")
+        merge_res, p, m = _merge_clustered_skills(lists_to_merge, providers, stage_params)
+        
+        # Auto-correct dict wrap
+        if isinstance(merge_res, dict):
+            merge_res = [merge_res]
+            
+        # Hard validation against lazy LLM collapse
+        if merge_res and isinstance(merge_res, list):
+            data["clustered_skills"] = merge_res
+            data["partial_chunks"] = []
+            data["last_updated"] = datetime.datetime.now().isoformat()
+            data["last_provider"] = p.name if p else "unknown"
+            data["last_model"] = m if m else "unknown"
+            made_changes = True
+        else:
+            len_res = len(merge_res) if merge_res and isinstance(merge_res, list) else 0
+            print(f"[MapReduce ERROR] Merge LLM cascade failed or returned suspiciously short array ({len_res} items) for {len(lists_to_merge)} chunks. Partial chunks preserved.")
+            # We leave partial_chunks untouched so it can be retried later.
+            
+    # Save final reduced state
+    if made_changes:
+        lock_digested = str(digested_path) + ".lock"
+        with filelock.FileLock(lock_digested, timeout=30):
+            digested_path.write_text(json.dumps(digested, indent=2), encoding="utf-8")
     
     return digested
 

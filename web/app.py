@@ -1382,23 +1382,69 @@ def main() -> None:
                 digested = json.loads(digested_path.read_text(encoding="utf-8"))
             except Exception:
                 pass
-
-        # --- Middle Section: Historical Misses ---
-        past_hashes = [h for h in digested.keys() if h != current_resume_hash]
-        if past_hashes:
-            with st.expander("🕰️ Historical Misses (Past Resume Versions)", expanded=False):
-                st.write("These skills were identified as missing in older versions of your resume:")
-                all_past_skills = set()
-                for ph in past_hashes:
-                    for s in digested[ph].get("clustered_skills", []):
-                        all_past_skills.add(s.get("skill", ""))
                 
-                # Show as inline code badges
-                if all_past_skills:
-                    badges = " ".join([f"`{s}`" for s in sorted(list(all_past_skills)) if s])
-                    st.markdown(badges)
-                else:
-                    st.write("None.")
+        # Load raw shortcomings for prompt export
+        ledger_path = user_details_dir / "skill_gaps_ledger.jsonl"
+        current_shortcomings = []
+        if ledger_path.exists():
+            with ledger_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line.strip())
+                        if entry.get("resume_hash") == current_resume_hash:
+                            current_shortcomings.extend(entry.get("shortcomings", []))
+                    except Exception:
+                        pass
+
+        # --- Middle Section: Historical Misses & Export ---
+        
+        col_mid1, col_mid2 = st.columns(2)
+        
+        with col_mid1:
+            past_hashes = [h for h in digested.keys() if h != current_resume_hash]
+            if past_hashes:
+                with st.expander("🕰️ Historical Misses (Past Resumes)", expanded=False):
+                    st.write("Skills identified as missing in older versions of your resume:")
+                    all_past_skills = set()
+                    for ph in past_hashes:
+                        for s in digested[ph].get("clustered_skills", []):
+                            all_past_skills.add(s.get("skill", ""))
+                    
+                    if all_past_skills:
+                        badges = " ".join([f"`{s}`" for s in sorted(list(all_past_skills)) if s])
+                        st.markdown(badges)
+                    else:
+                        st.write("None.")
+                        
+        with col_mid2:
+            if current_shortcomings:
+                with st.expander("📥 Export Raw Gaps for External AI", expanded=False):
+                    st.write("Use this prompt with ChatGPT, Claude, or another powerful AI to manually cluster your shortcomings if the local models fail.")
+                    
+                    reversed_shortcomings = list(reversed(current_shortcomings))
+                    bullets = "\n".join([f"- {s}" for s in reversed_shortcomings])
+                    
+                    prompt_text = (
+                        "You are a career data analyst. Below is a chronological list of shortcomings "
+                        "(newest first) identified across my recent job applications. Please cluster "
+                        "similar shortcomings into unified skills and calculate their frequency.\n\n"
+                        "Output ONLY a flat JSON array of objects with the exact structure:\n"
+                        "[\n  {\n    \"skill\": \"<Unified Skill Name>\",\n    \"count\": <integer frequency>\n  }\n]\n\n"
+                        "Rules:\n"
+                        "1. Group similar technologies cohesively.\n"
+                        "2. You must be EXHAUSTIVE. Do not ignore any distinct skill.\n"
+                        "3. DO NOT use chain of thought. Output ONLY the JSON.\n\n"
+                        "## Raw Shortcomings to Cluster\n"
+                        f"{bullets}"
+                    )
+                    
+                    st.download_button(
+                        label="Download Prompt as .txt",
+                        data=prompt_text,
+                        file_name="manual_clustering_prompt.txt",
+                        mime="text/plain"
+                    )
+                    st.code(prompt_text, language="markdown")
 
         st.markdown("---")
 
@@ -1431,11 +1477,13 @@ def main() -> None:
                 help="You can manually edit this array to fix LLM clustering mistakes or port over old skills."
             )
             
-            col_btn1, col_btn2 = st.columns(2)
+            col_btn1, col_btn2, col_btn3 = st.columns(3)
             with col_btn1:
-                save_clicked = st.form_submit_button("💾 Save & Validate JSON", disabled=not is_current)
+                save_clicked = st.form_submit_button("💾 Save JSON", disabled=not is_current)
             with col_btn2:
-                run_clicked = st.form_submit_button("🚀 Process Ledger & Run Gap Fill", disabled=not is_current or not has_providers)
+                run_clicked = st.form_submit_button("🚀 Process Ledger & Gap Fill", disabled=not is_current or not has_providers)
+            with col_btn3:
+                run_only_clicked = st.form_submit_button("⚡ Gap Fill ONLY (Skip Ledger)", disabled=not is_current or not has_providers)
                 
             if save_clicked and is_current:
                 try:
@@ -1480,6 +1528,32 @@ def main() -> None:
                         st.rerun()
                     else:
                         st.error("❌ Failed to generate gap fill analysis. Check logs.")
+                        
+            if run_only_clicked and is_current:
+                with st.spinner("Running MapReduce Gap Fill (Skipping Ledger)..."):
+                    # 1. Get current resume clustered skills directly from UI/Disk
+                    clustered = digested.get(current_resume_hash, {}).get("clustered_skills", [])
+                    
+                    if not clustered:
+                        st.error("❌ Clustered skills list is empty. Please Save JSON or Process Ledger first.")
+                    else:
+                        # 2. Gap Fill
+                        result = llm_scorer.run_gap_fill(clustered, config, providers, stage_params_map.get("global_gap_fill"))
+                        if result:
+                            cache_payload = {
+                                "last_run_date": datetime.datetime.now().isoformat(),
+                                "resume_hash": current_resume_hash,
+                                "quick_wins": result.get("quick_wins", []),
+                                "learning_path": result.get("learning_path", []),
+                                "_meta": result.get("_meta", {})
+                            }
+                            lock_p = str(cache_path) + ".lock"
+                            with filelock.FileLock(lock_p, timeout=30):
+                                cache_path.write_text(json.dumps(cache_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                            st.success("✅ Gap Fill Analysis complete!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to generate gap fill analysis. Check logs.")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # TAB 6 — Settings & Files
