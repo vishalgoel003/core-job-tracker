@@ -665,7 +665,7 @@ def _cluster_shortcomings_chunk(
     if not chunk:
         return None, None, None
     
-    params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=1500)
+    params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=2500)
     user_prompt = "## Raw Shortcomings to Cluster\n\n" + "\n".join(f"- {s}" for s in chunk)
     
     def validate_cluster(text):
@@ -711,7 +711,7 @@ def _merge_clustered_skills(
     if len(lists_to_merge) == 1:
         return lists_to_merge[0], None, None
 
-    params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=2500)
+    params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=8000)
     user_prompt = "## Lists to Merge\n\n"
     for i, lst in enumerate(lists_to_merge):
         user_prompt += f"### List {i+1}\n```json\n{json.dumps(lst, separators=(',', ':'))}\n```\n\n"
@@ -933,7 +933,7 @@ def run_gap_fill(
         return {"quick_wins": [], "learning_path": []}
         
     supplementary_data = _read_supplementary_data(config)
-    params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=2500)
+    params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=8000)
     
     user_prompt = (
         "## Clustered Missing Skills\n\n```json\n"

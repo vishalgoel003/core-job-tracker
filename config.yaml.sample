@@ -162,7 +162,7 @@ llm:
         - "meta-llama/llama-4-scout-17b-16e-instruct"  # Groq — Llama fallback
     global_insights:
       temperature: 0.10               # Low for factual matching and structured output
-      max_tokens: 3500                # Safe limit to prevent 413 Payload Too Large
+      max_tokens: 8000                # Safe limit to prevent 413 Payload Too Large
       max_sleep_seconds: 60           # Wait up to 60s for top-tier model, prevent map-reduce data loss
       models:
         - "gemini-3.1-flash-lite"     # Tier 1: Extremely fast and generous limits, perfect for clustering

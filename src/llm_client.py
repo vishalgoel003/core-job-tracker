@@ -514,6 +514,14 @@ def extract_json(raw_text: str) -> dict | None:
         except json.JSONDecodeError:
             pass
 
+    # Attempt 4: extract first [...] block (vital for map-reduce clusters)
+    bracket_match = re.search(r'\[[\s\S]*\]', text)
+    if bracket_match:
+        try:
+            return json.loads(bracket_match.group(0))
+        except json.JSONDecodeError:
+            pass
+
     return None
 
 
