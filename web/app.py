@@ -100,11 +100,11 @@ st.markdown("""
 
 _LOCK_TIMEOUT_S = 5
 
-SORT_OPTIONS = ["Deadline ↑", "Relevance ↓", "Posted Date ↓", "Company A→Z"]
+SORT_OPTIONS = ["Posted Date ↓", "Deadline ↑", "Relevance ↓", "Company A→Z"]
 _SORT_MAP = {
+    "Posted Date ↓": ("first_discovered_on",   False),
     "Deadline ↑":    ("last_date",             True),
     "Relevance ↓":   ("relevance",             False),
-    "Posted Date ↓": ("first_discovered_on",   False),
     "Company A→Z":   ("_company",              True),
 }
 
@@ -1350,7 +1350,10 @@ def main() -> None:
                 pass
                 
         if cache_data and "quick_wins" in cache_data:
-            st.caption(f"**Last Gap Fill Run:** {cache_data.get('last_run_date', 'Unknown')[:19]}")
+            meta = cache_data.get("_meta", {})
+            provider_str = meta.get("provider", "Unknown")
+            model_str = meta.get("model", "Unknown")
+            st.caption(f"**Last Gap Fill Run:** {cache_data.get('last_run_date', 'Unknown')[:19]} | **Model:** {provider_str} / {model_str}")
             if cache_data.get("resume_hash") != current_resume_hash:
                 st.warning("🔄 **Resume has changed since last run.** Your insights might be outdated. Re-run analysis below.")
             
@@ -1461,7 +1464,7 @@ def main() -> None:
                     clustered = updated_digested.get(current_resume_hash, {}).get("clustered_skills", [])
                     
                     # 3. Gap Fill
-                    result = llm_scorer.run_gap_fill(clustered, config, providers, stage_params_map.get("global_insights"))
+                    result = llm_scorer.run_gap_fill(clustered, config, providers, stage_params_map.get("global_gap_fill"))
                     if result:
                         cache_payload = {
                             "last_run_date": datetime.datetime.now().isoformat(),

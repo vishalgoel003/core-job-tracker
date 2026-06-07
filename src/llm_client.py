@@ -32,6 +32,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
+import email.utils
 
 import requests
 
@@ -72,6 +73,7 @@ class StageParams:
     """Per-pipeline-stage parameters (temperature, max_tokens, model preference)."""
     temperature: float = 0.15
     max_tokens: int = 1500
+    max_sleep_seconds: int = 0
     models: list[str] = field(default_factory=list)
     # Ordered list of preferred model names for this stage.
     # The client exhausts all keys for all providers capable of serving
@@ -195,6 +197,7 @@ def load_llm_config(config: dict) -> tuple[list[ProviderConfig], dict[str, Stage
         params = StageParams(
             temperature=float(stage_cfg.get("temperature", 0.15)),
             max_tokens=int(stage_cfg.get("max_tokens", 1500)),
+            max_sleep_seconds=int(stage_cfg.get("max_sleep_seconds", 0)),
             models=stage_models,
         )
         stage_params_map[stage_name] = params
@@ -216,7 +219,11 @@ def _update_rate_limit_state(rate_key: str, response: requests.Response) -> None
         try:
             state["retry_after_until"] = time.time() + float(retry_after)
         except ValueError:
-            state["retry_after_until"] = None
+            parsed_date = email.utils.parsedate_to_datetime(retry_after)
+            if parsed_date:
+                state["retry_after_until"] = parsed_date.timestamp()
+            else:
+                state["retry_after_until"] = None
 
     # X-RateLimit-Remaining — try both standard and Groq/Cerebras variants
     remaining = (response.headers.get("X-RateLimit-Remaining") or
@@ -224,7 +231,7 @@ def _update_rate_limit_state(rate_key: str, response: requests.Response) -> None
                  response.headers.get("x-ratelimit-remaining-requests"))
     if remaining is not None:
         try:
-            state["remaining"] = int(remaining)
+            state["remaining"] = int(float(remaining))
         except ValueError:
             pass
 
@@ -256,31 +263,29 @@ def _update_rate_limit_state(rate_key: str, response: requests.Response) -> None
                 pass
 
 
-def _is_rate_limited(rate_key: str) -> bool:
-    """Check if a provider+key is currently rate-limited based on observed headers."""
+def _get_wait_time(rate_key: str) -> float:
+    """Return how many seconds to wait if rate-limited, else 0."""
     state = _rate_limit_state.get(rate_key)
     if not state:
-        return False
+        return 0.0
 
     now = time.time()
+    wait_times = []
 
-    # Check Retry-After
     retry_until = state.get("retry_after_until")
     if retry_until and now < retry_until:
-        return True
+        wait_times.append(retry_until - now)
 
-    # Check remaining quota
     remaining = state.get("remaining")
     reset_at = state.get("reset_at")
     if remaining is not None and remaining <= 0:
         if reset_at and now < reset_at:
-            return True
+            wait_times.append(reset_at - now)
         else:
-            # Reset window has passed, clear stale state
             state.pop("remaining", None)
             state.pop("reset_at", None)
 
-    return False
+    return max(wait_times) if wait_times else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -584,10 +589,18 @@ def call_llm(
             for api_key in provider.api_keys:
                 rk = _rate_key(provider.name, api_key)
 
-                # Skip rate-limited keys (cloud only)
-                if provider.rpm_limit > 0 and _is_rate_limited(rk):
-                    print(f"  [LLM] Skipping {provider.name} ({api_key[-4:]}...) — rate limited")
-                    continue
+                # Handle rate limits and smart sleep
+                if provider.rpm_limit > 0:
+                    wait_time = _get_wait_time(rk)
+                    if wait_time > 0:
+                        if wait_time <= params.max_sleep_seconds:
+                            print(f"  [LLM] Rate limit hit for {provider.name}. Smart sleeping for {wait_time:.1f}s to retain preferred model...")
+                            time.sleep(wait_time)
+                            # Clear the tracked rate limit so the request can proceed
+                            _rate_limit_state.pop(rk, None)
+                        else:
+                            print(f"  [LLM] Skipping {provider.name} ({api_key[-4:]}...) — rate limited (wait {wait_time:.1f}s > max {params.max_sleep_seconds}s)")
+                            continue
 
                 # Build adapter-specific request
                 if adapter == "gemini":
@@ -609,22 +622,41 @@ def call_llm(
                 key_label = f"...{api_key[-4:]}" if api_key else "local"
                 print(f"  [LLM] Trying {provider.name} ({model}) key={key_label} ...")
 
-                try:
-                    response = session.post(url, json=body, headers=headers, timeout=150)
-                except requests.exceptions.RequestException as exc:
-                    print(f"  [LLM] {provider.name} network error: {exc}")
-                    continue
+                # Small retry loop for 5XX and 429 smart-sleep
+                for attempt in range(2):
+                    try:
+                        response = session.post(url, json=body, headers=headers, timeout=150)
+                    except requests.exceptions.RequestException as exc:
+                        print(f"  [LLM] {provider.name} network error: {exc}")
+                        break
 
-                # Update per-key rate-limit state from response headers
-                if provider.rpm_limit > 0:
-                    _update_rate_limit_state(rk, response)
+                    # Update per-key rate-limit state from response headers
+                    if provider.rpm_limit > 0:
+                        _update_rate_limit_state(rk, response)
 
-                if response.status_code == 429:
-                    print(f"  [LLM] {provider.name} key={key_label} 429 — trying next key.")
-                    continue
+                    if response.status_code == 429:
+                        wait_time = _get_wait_time(rk)
+                        if wait_time > 0 and wait_time <= params.max_sleep_seconds:
+                            print(f"  [LLM] {provider.name} 429 hit. Smart sleeping {wait_time:.1f}s to retry...")
+                            time.sleep(wait_time)
+                            _rate_limit_state.pop(rk, None)
+                            continue  # Retry!
+                        else:
+                            print(f"  [LLM] {provider.name} key={key_label} 429 — trying next key.")
+                            break
 
-                if response.status_code >= 500:
-                    print(f"  [LLM] {provider.name} returned {response.status_code} (server error). Trying next.")
+                    if response.status_code >= 500:
+                        if attempt == 0:
+                            print(f"  [LLM] {provider.name} returned {response.status_code}. Retrying in 2s...")
+                            time.sleep(2.0)
+                            continue
+                        else:
+                            print(f"  [LLM] {provider.name} returned {response.status_code} (server error). Trying next.")
+                            break
+                            
+                    break  # Success or 400s
+
+                if response is None or response.status_code == 429 or response.status_code >= 500:
                     continue
 
                 if response.status_code != 200:
@@ -713,13 +745,22 @@ def call_llm(
                 if validator_fn:
                     if not validator_fn(text):
                         print(f"  [LLM] {provider.name} response failed validation (lazy or invalid). Trying next.")
+                        import os
+                        if os.environ.get("DEBUG_INSIGHTS_LOG", "0") == "1":
+                            from pathlib import Path
+                            debug_log = Path("logs/insight_pipeline_debug.log")
+                            debug_log.parent.mkdir(exist_ok=True)
+                            with debug_log.open("a", encoding="utf-8") as f:
+                                f.write(f"\n{'!'*80}\n")
+                                f.write(f"VALIDATION FAILED FOR: {provider.name} ({model})\n")
+                                f.write(f"RAW TEXT:\n{text}\n")
+                                f.write(f"{'!'*80}\n")
                         continue
 
                 print(f"  [LLM] Success from {provider.name} ({model}) — {len(text)} chars")
                 return text, provider, model
 
     print("  [LLM] All models × providers × keys exhausted. No response obtained.")
-    return None, None, None
 
 
 # ---------------------------------------------------------------------------

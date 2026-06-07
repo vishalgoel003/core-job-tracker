@@ -216,6 +216,14 @@ python src/llm_scorer.py --job JR-0000105811 --company Barclays
 python src/llm_scorer.py --gap-check JR-0000105811 --company Barclays
 ```
 
+### LLM Pipeline Stages
+The application uses 5 strictly decoupled LLM pipeline stages, configured in `config.yaml` to allow independent model routing and parameter tuning:
+1. **`scorecard`**: Extracts JD structure into a 7-pillar evaluation scheme. (Traditional Pipeline)
+2. **`evaluation`**: Scores the user's resume against the generated scorecard. (Traditional Pipeline)
+3. **`gap_analysis`**: Evaluates a single job's shortcomings against user's Supplementary Data. (Traditional Pipeline)
+4. **`global_insights`**: Map-Reduce chunking and clustering of all shortcomings across all jobs. (Insights Pipeline)
+5. **`global_gap_fill`**: Final mapping of massive global skill clusters against Supplementary Data. (Insights Pipeline)
+
 ---
 
 ## Launching the Web UI

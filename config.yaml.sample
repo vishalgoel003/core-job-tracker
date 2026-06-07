@@ -124,6 +124,7 @@ llm:
     scorecard:
       temperature: 0.15               # Low for consistent structured output
       max_tokens: 2500                # High to allow reasoning in thinking models
+      max_sleep_seconds: 0            # Fail fast, prioritize bulk scoring speed over waiting
       models:
         - "openai/gpt-oss-120b"       # Groq — 120B dense, best structured output
         - "openai/gpt-oss-120b:free"  # OpenRouter — same model, cascade fallback
@@ -136,6 +137,7 @@ llm:
     evaluation:
       temperature: 0.10               # Very low for reproducible scoring
       max_tokens: 2000                # Increased to accommodate reasoning models
+      max_sleep_seconds: 0            # Fail fast, prioritize bulk scoring speed over waiting
       models:
         - "openai/gpt-oss-120b"       # Groq — best accuracy for scoring
         - "openai/gpt-oss-120b:free"  # OpenRouter fallback
@@ -146,8 +148,9 @@ llm:
         - "gemma-4-31b-it"               # Google — 1,500 RPD, unlimited TPM
         - "google/gemma-4-31b-it:free"   # OpenRouter — Gemma fallback
     gap_analysis:
-      temperature: 0.10               # Low for factual matching
-      max_tokens: 4000                # Increased to accommodate reasoning models
+      temperature: 0.10               # Low for consistency and accuracy
+      max_tokens: 8000                # Increased to accommodate massive JSON responses and reasoning
+      max_sleep_seconds: 60           # Wait up to 60s for top-tier model, prevent data loss
       models:
         - "gemma-4-31b-it"               # Google — 1,500 RPD, unlimited TPM
         - "google/gemma-4-31b-it:free"   # OpenRouter — additional Gemma capacity
@@ -159,7 +162,8 @@ llm:
         - "meta-llama/llama-4-scout-17b-16e-instruct"  # Groq — Llama fallback
     global_insights:
       temperature: 0.10               # Low for factual matching and structured output
-      max_tokens: 4000                # Bumped to 4000 to prevent JSON truncation on huge cluster lists
+      max_tokens: 3500                # Safe limit to prevent 413 Payload Too Large on Groq 120B
+      max_sleep_seconds: 60           # Wait up to 60s for top-tier model, prevent map-reduce data loss
       models:
         - "openai/gpt-oss-120b"       # Tier 1: 120B Dense (Groq)
         - "openai/gpt-oss-120b:free"  # Tier 1: 120B (OpenRouter)
@@ -169,6 +173,19 @@ llm:
         - "qwen/qwen3-32b"            # Tier 4: Reliable mid-size
         - "gemma-4-31b-it"            
         - "google/gemma-4-31b-it:free"   
+        - "meta-llama/llama-4-scout-17b-16e-instruct"
+    global_gap_fill:
+      temperature: 0.10               # Low for consistency and accuracy
+      max_tokens: 8000                # Massive JSON output needed for the 50-item gap fill
+      max_sleep_seconds: 60           # Wait up to 60s for top-tier model
+      models:
+        - "gemma-4-31b-it"               # Tier 1: Gemma excels at cross-referencing massive text
+        - "google/gemma-4-31b-it:free"   # Tier 1: Gemma fallback
+        - "qwen/qwen3-32b"            
+        - "qwen/qwen3-next-80b-a3b-instruct:free"      
+        - "openai/gpt-oss-120b"       
+        - "openai/gpt-oss-120b:free"  
+        - "gpt-oss-120b"              
         - "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # ── User Profile Paths ──────────────────────────────────────────────────────

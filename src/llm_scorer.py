@@ -169,7 +169,8 @@ Rules:
 3. CRITICAL: "req" must list SPECIFIC technologies, frameworks, tools, or skills named in the JD — NOT generic categories. For example, write "Core Java" and "Spring Boot" instead of "Programming Languages". Write "Kafka" and "Zookeeper" instead of "Messaging". Write "OAuth2" instead of "Security Concepts". Be as granular as the JD text allows.
 4. Every pillar MUST have at least one item in "req". Empty req arrays are not allowed.
 5. "equiv" lists acceptable alternatives explicitly mentioned in the JD (e.g., "Oracle or PostgreSQL", "AWS or Azure or GCP"). Leave empty [] if no alternatives are mentioned.
-6. Return ONLY valid JSON. No explanations, no markdown fences, no preamble."""
+6. Return ONLY valid JSON. No explanations, no markdown fences, no preamble.
+7. CRITICAL: Output the JSON in a minified, compact format (no unnecessary spaces, newlines, or indentation) to save output tokens."""
 
 EVALUATION_SYSTEM_PROMPT = """You are a resume evaluator. Given a candidate resume and a job scorecard (JSON), evaluate how well the resume matches the job requirements.
 
@@ -188,7 +189,8 @@ Rules:
 3. "shortcomings" must list ONLY specific, actionable gaps — not vague observations.
 4. If the candidate exceeds a requirement, note it positively in your scoring but don't list it as a shortcoming.
 5. Consider hard_filters: if the candidate clearly fails a hard filter (e.g., min YoE), reduce score significantly.
-6. Return ONLY valid JSON. No explanations, no markdown fences, no preamble."""
+6. Return ONLY valid JSON. No explanations, no markdown fences, no preamble.
+7. CRITICAL: Output the JSON in a minified, compact format (no unnecessary spaces, newlines, or indentation) to save output tokens."""
 
 GAP_ANALYSIS_SYSTEM_PROMPT = """You are a career data analyst. Given a list of shortcomings from a job evaluation and the candidate's Supplementary Data, determine which gaps can be covered by information in the Supplementary Data.
 
@@ -210,8 +212,10 @@ Rules:
 1. Only list a gap as "coverable" if there is CONCRETE evidence in the Supplementary Data.
 2. Quote specific entries, project names, skill names, or position descriptions as evidence.
 3. If a gap is partially coverable, include it in "coverable" with honest evidence.
-4. Return ONLY valid JSON. No explanations, no markdown fences, no preamble.
-5. IMPORTANT: Output the JSON object immediately. Do not generate any chain-of-thought or reasoning."""
+4. IMPORTANT: Output the JSON object immediately. Do not generate any chain-of-thought or reasoning.
+5. CRITICAL: DO NOT use ellipses (`...`) or comments (`//`).
+6. CRITICAL: DO NOT emit partial arrays. You MUST process and output every single item in the array fully. DO NOT BE LAZY.
+7. CRITICAL: Output the JSON in a minified, compact format (no unnecessary spaces, newlines, or indentation) to save output tokens."""
 
 CLUSTER_CHUNK_SYSTEM_PROMPT = """You are a career data analyst. Given a list of shortcomings identified across job applications, you must:
 1. Cluster similar shortcomings into unified skills (e.g., group "Lacks Kafka" and "No experience with Kafka streams" into "Kafka").
@@ -229,7 +233,8 @@ Rules:
 1. Group similar technologies and concepts cohesively.
 2. Output ONLY valid JSON. No explanations, no markdown fences.
 3. CRITICAL: Your output MUST be a flat JSON array of objects. Do NOT nest objects or wrap the array in a dictionary.
-4. CRITICAL: You must be EXHAUSTIVE. Do NOT drop or ignore any skills from the input. Every distinct shortcoming must be represented in the final array, even if its count is 1."""
+4. CRITICAL: You must be EXHAUSTIVE. Do NOT drop or ignore any skills from the input. Every distinct shortcoming must be represented in the final array, even if its count is 1.
+5. CRITICAL: Output the JSON in a minified, compact format (no unnecessary spaces, newlines, or indentation) to save output tokens."""
 
 MERGE_CLUSTERS_SYSTEM_PROMPT = """You are a career data analyst. Given multiple JSON lists of missing skills and their counts, merge them into a single unified list.
 
@@ -246,7 +251,8 @@ Rules:
 2. Sort the final array by `count` descending.
 3. Output ONLY valid JSON. No explanations, no markdown fences.
 4. CRITICAL: Your output MUST be a flat JSON array of objects. Do NOT nest objects or wrap the array in a dictionary.
-5. CRITICAL: You must be EXHAUSTIVE. Do NOT drop or ignore any skills from the input lists. Every single skill provided in the input lists MUST exist in your final merged output. Add their counts together if merging."""
+5. CRITICAL: You must be EXHAUSTIVE. Do NOT drop or ignore any skills from the input lists. Every single skill provided in the input lists MUST exist in your final merged output. Add their counts together if merging.
+6. CRITICAL: Output the JSON in a minified, compact format (no unnecessary spaces, newlines, or indentation) to save output tokens."""
 
 GAP_FILL_SYSTEM_PROMPT = """You are a career data analyst. Given a list of clustered shortcomings (skills missing from the candidate's resume) and the candidate's Supplementary Data, determine if the candidate actually possesses these skills.
 
@@ -273,7 +279,10 @@ Rules:
 2. "learning_path" means the candidate TRULY LACKS the skill (not found in Supplementary Data).
 3. Sort both arrays by `count` descending.
 4. Output ONLY valid JSON. No explanations, no markdown fences.
-5. CRITICAL: You must ONLY evaluate the exact skills provided in the input JSON. DO NOT invent or extract any other skills from the Supplementary Data."""
+5. CRITICAL: You must ONLY evaluate the exact skills provided in the input JSON. DO NOT invent or extract any other skills from the Supplementary Data.
+6. CRITICAL: DO NOT use ellipses (`...`) or comments (`//`).
+7. CRITICAL: DO NOT emit partial arrays. You MUST process and output every single item in the array fully. DO NOT BE LAZY.
+8. CRITICAL: Output the JSON in a minified, compact format (no unnecessary spaces, newlines, or indentation) to save output tokens."""
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +571,15 @@ def check_supplementary_gaps(
         validator_fn=lambda t: llm_client.extract_json(t) is not None,
     )
 
+    if os.environ.get("DEBUG_INSIGHTS_LOG", "0") == "1":
+        debug_log = Path("logs/insight_pipeline_debug.log")
+        debug_log.parent.mkdir(exist_ok=True)
+        with debug_log.open("a", encoding="utf-8") as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"SINGLE JOB GAP ANALYSIS INPUT:\n{user_prompt}\n")
+            f.write(f"\nSINGLE JOB GAP ANALYSIS RAW OUTPUT ({used_provider.name if used_provider else 'none'}):\n{raw_text}\n")
+            f.write(f"{'='*80}\n")
+
     if not raw_text:
         print("  [SCORER] Gap analysis failed — no LLM response.")
         return None
@@ -622,11 +640,12 @@ def _update_ledger(ledger_path: Path, new_entry: dict) -> None:
 def _cluster_shortcomings_chunk(
     chunk: list[str],
     providers: list[llm_client.ProviderConfig],
-    stage_params: llm_client.StageParams | None = None
-) -> list[dict] | None:
+    stage_params: llm_client.StageParams | None = None,
+    chunk_size: int = 25
+) -> tuple[list[dict] | None, llm_client.ProviderConfig | None, str | None]:
     """Pass 1: Map raw shortcomings to a basic clustered list."""
     if not chunk:
-        return []
+        return None, None, None
     
     params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=1500)
     user_prompt = "## Raw Shortcomings to Cluster\n\n" + "\n".join(f"- {s}" for s in chunk)
@@ -652,19 +671,19 @@ def _cluster_shortcomings_chunk(
             f.write(f"{'='*80}\\n")
     
     if not raw_text:
-        return None
-    return llm_client.extract_json(raw_text)
+        return None, None, None
+    return llm_client.extract_json(raw_text), used_provider, used_model
 
 def _merge_clustered_skills(
     lists_to_merge: list[list[dict]],
     providers: list[llm_client.ProviderConfig],
     stage_params: llm_client.StageParams | None = None
-) -> list[dict] | None:
+) -> tuple[list[dict] | None, llm_client.ProviderConfig | None, str | None]:
     """Pass 2: Reduce multiple clustered lists into one master list."""
     if not lists_to_merge:
-        return []
+        return [], None, None
     if len(lists_to_merge) == 1:
-        return lists_to_merge[0]
+        return lists_to_merge[0], None, None
 
     params = stage_params or llm_client.StageParams(temperature=0.10, max_tokens=2500)
     user_prompt = "## Lists to Merge\n\n"
@@ -692,8 +711,8 @@ def _merge_clustered_skills(
             f.write(f"{'*'*80}\\n")
     
     if not raw_text:
-        return None
-    return llm_client.extract_json(raw_text)
+        return None, None, None
+    return llm_client.extract_json(raw_text), used_provider, used_model
 
 def digest_ledger(
     config: dict,
@@ -747,15 +766,18 @@ def digest_ledger(
         if not shortcomings:
             continue
             
-        # Chunking (e.g., 50 per chunk)
-        chunk_size = 50
+        # Chunking (e.g., 25 per chunk)
+        chunk_size = 25
         chunks = [shortcomings[i:i + chunk_size] for i in range(0, len(shortcomings), chunk_size)]
         
         clustered_lists = []
+        last_prov, last_mod = "unknown", "unknown"
         for c in chunks:
-            res = _cluster_shortcomings_chunk(c, providers, stage_params)
+            res, p, m = _cluster_shortcomings_chunk(c, providers, stage_params)
             if res:
                 clustered_lists.append(res)
+                last_prov = p.name if p else "unknown"
+                last_mod = m if m else "unknown"
                 
         # Existing state
         existing_state = digested.get(r_hash, {}).get("clustered_skills", [])
@@ -763,14 +785,30 @@ def digest_ledger(
             clustered_lists.append(existing_state)
             
         # Merge
-        final_list = _merge_clustered_skills(clustered_lists, providers, stage_params) or []
+        final_list = []
+        merge_prov, merge_model = last_prov, last_mod
+        if len(clustered_lists) == 1:
+            final_list = clustered_lists[0]
+        elif len(clustered_lists) > 1:
+            merge_res, p, m = _merge_clustered_skills(clustered_lists, providers, stage_params)
+            final_list = merge_res or []
+            merge_prov = p.name if p else "unknown"
+            merge_model = m if m else "unknown"
         
         # Auto-correct if the LLM returned a single dict instead of a list
         if isinstance(final_list, dict):
             final_list = [final_list]
+            
+        # Hard validation: If we processed multiple shortcomings but the LLM violently summarized it 
+        # to less than 3 skills, it likely hallucinated. Reject it to prevent data loss.
+        if len(new_entries_by_hash.get(r_hash, [])) > 10 and len(final_list) < 3:
+            print(f"[MapReduce ERROR] LLM {merge_prov}/{merge_model} returned suspiciously short array ({len(final_list)} items). Rejecting to prevent data loss.")
+            continue
         
         digested[r_hash] = {
             "last_updated": datetime.datetime.now().isoformat(),
+            "last_provider": merge_prov,
+            "last_model": merge_model,
             "clustered_skills": final_list
         }
         
@@ -819,12 +857,21 @@ def run_gap_fill(
         providers=providers,
         system_prompt=GAP_FILL_SYSTEM_PROMPT,
         user_prompt=user_prompt,
-        stage="global_insights",
+        stage="global_gap_fill",
         stage_params=params,
         json_mode=True,
         validator_fn=lambda t: llm_client.extract_json(t) is not None,
     )
     
+    if os.environ.get("DEBUG_INSIGHTS_LOG", "0") == "1":
+        debug_log = Path("logs/insight_pipeline_debug.log")
+        debug_log.parent.mkdir(exist_ok=True)
+        with debug_log.open("a", encoding="utf-8") as f:
+            f.write(f"\\n{'*'*80}\\n")
+            f.write(f"GLOBAL GAP FILL INPUT:\\n{user_prompt}\\n")
+            f.write(f"\\nGLOBAL GAP FILL RAW OUTPUT ({used_provider.name if used_provider else 'none'}):\\n{raw_text}\\n")
+            f.write(f"{'*'*80}\\n")
+
     if not raw_text:
         return None
         
