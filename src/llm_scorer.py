@@ -38,6 +38,40 @@ except ImportError:
     import config_engine
     import llm_client
 
+# ── Log Management (Docker Safe) ──────────────────────────────────────────
+import logging
+import builtins
+from logging.handlers import RotatingFileHandler
+
+def _setup_logger():
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    logger = logging.getLogger("llm_scorer")
+    logger.setLevel(logging.INFO)
+    
+    if not logger.handlers:
+        fh = RotatingFileHandler(log_dir / "scorer.log", maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
+        fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+        
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setFormatter(fmt)
+        logger.addHandler(ch)
+        
+    return logger
+
+_logger = _setup_logger()
+
+def _custom_print(*args, **kwargs):
+    msg = " ".join(str(a) for a in args)
+    _logger.info(msg)
+
+# Override built-in print globally for this script
+builtins.print = _custom_print
+
+
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -711,7 +745,9 @@ def digest_ledger(
         }
         
     # Save digested
-    digested_path.write_text(json.dumps(digested, indent=2), encoding="utf-8")
+    lock_digested = str(digested_path) + ".lock"
+    with filelock.FileLock(lock_digested, timeout=30):
+        digested_path.write_text(json.dumps(digested, indent=2), encoding="utf-8")
     
     # Archive processed lines
     with archive_path.open("a", encoding="utf-8") as fa:
@@ -719,7 +755,9 @@ def digest_ledger(
             fa.write(line + "\n")
             
     # Clear active ledger safely
-    ledger_path.write_text("", encoding="utf-8")
+    lock_ledger = str(ledger_path) + ".lock"
+    with filelock.FileLock(lock_ledger, timeout=30):
+        ledger_path.write_text("", encoding="utf-8")
     
     return digested
 
@@ -869,10 +907,12 @@ def score_job(
 
     # Save scorecard
     scorecards_dir.mkdir(parents=True, exist_ok=True)
-    scorecard_path.write_text(
-        json.dumps(scorecard, separators=(',', ':'), ensure_ascii=False),
-        encoding="utf-8",
-    )
+    lock_sc = str(scorecard_path) + ".lock"
+    with filelock.FileLock(lock_sc, timeout=30):
+        scorecard_path.write_text(
+            json.dumps(scorecard, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
     print(f"  [SCORER] Scorecard saved → {scorecard_path}")
 
     # 3. Read resume
@@ -929,10 +969,12 @@ def score_job(
             "shortcomings": shortcomings,
             "_meta": evaluation.get("_meta", {})
         }
-        shortcomings_path.write_text(
-            json.dumps(shortcomings_data, separators=(',', ':'), ensure_ascii=False),
-            encoding="utf-8",
-        )
+        lock_sh = str(shortcomings_path) + ".lock"
+        with filelock.FileLock(lock_sh, timeout=30):
+            shortcomings_path.write_text(
+                json.dumps(shortcomings_data, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
         print(f"  [SCORER] Shortcomings saved → {shortcomings_path}")
 
         # 5.5 Append/Update global skill gaps ledger

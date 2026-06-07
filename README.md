@@ -11,7 +11,7 @@ A self-hosted, multi-company job application CRM built entirely in Python. Scrap
 | **Scraper** | Stateful `requests.Session` pagination against Workday's CXS API. Handles WAF cookie reuse, 130s timeouts, and inter-page delays. Parallel multi-company scraping via `ThreadPoolExecutor`. |
 | **State Tracking** | 3-way reconciliation (New / Updated / Delisted). Self-healing `.md` file checks. "Late Write" CSV pattern populates authoritative HR posting dates. |
 | **Rich Job Files** | Per-job `.md` files with metadata table (Posted Date, Age, Deadline), full HTML-to-Markdown job description via `html2text`, and an editable `## Notes` section. |
-| **Web UI** | Streamlit 3-Tab CRM: Active Radar · Sent Applications · Archived. Inline applied date-stamping, relevance scoring, and `filelock` safe write-back. |
+| **Web UI** | Streamlit 6-Tab CRM: Active Radar · Sent · Archived · Skipped · Insights · Settings. Inline applied date-stamping, relevance scoring, and `filelock` safe write-back. |
 | **LLM Scorer** | On-demand scorecard generation + resume evaluation using free-tier cloud APIs (Groq, Gemini, Cerebras) or local models (Ollama/LM Studio). Provider cascade with smart rate-limit header awareness. |
 | **Gap Analysis** | Supplementary data cross-referencing against identified shortcomings — shows what gaps your Supplementary data can cover before applying. |
 
@@ -217,9 +217,10 @@ Open **http://localhost:8501** in your browser.
 | **📦 Archived** | Delisted jobs (removed from live board) | Read-only · Click 🔗 to view cached JD |
 | **🚫 Skipped** | Live jobs marked as unsuitable | Uncheck 🚫 to restore to Active Radar |
 | **🧠 Insights & Growth** | MapReduce pipeline of aggregated missing skills | View Quick Wins · View Historical Misses · Run Gap Fill |
+| **⚙️ Settings & Files** | Cloud File Manager for Docker deployments | Edit `config.yaml`, `resume.md`, and `SupplementaryData` without SSH |
 
 **Sidebar controls:** Company filter, keyword search, sort priority (Deadline ↑ / Relevance ↓ / Posted Date ↓), deadline alert window.
-- **🚀 Run Scraper:** Fetches latest jobs via backend subprocess.
+- **🚀 Run Scraper:** Fetches latest jobs via a detached background subprocess. Safe to close the browser tab. Logs are written to `logs/scraper.log`.
 - **🧹 Prune Dead Jobs:** Permanently deletes files and CSV rows for unapplied jobs in the Archived/Skipped state.
 
 **Job Details Page (click 🔗 View on any row):**

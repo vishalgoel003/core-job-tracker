@@ -168,11 +168,12 @@ def _not_skipped(val: str) -> bool:
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=30)
-def load_all_jobs() -> pd.DataFrame:
+def load_all_jobs() -> tuple[pd.DataFrame, float]:
     """
     Concat master_jobs.csv from every configured company.
     Injects _company, _csv_path, _md_dir per-row (never displayed).
     TTL=30s keeps the cache fresh without a manual refresh.
+    Returns (DataFrame, unix_timestamp_when_loaded).
     """
     config    = config_engine.load_config("config.yaml")
     all_paths = config_engine.resolve_output_paths(config)
@@ -190,7 +191,8 @@ def load_all_jobs() -> pd.DataFrame:
         frames.append(df)
 
     if not frames:
-        return pd.DataFrame()
+        import time
+        return pd.DataFrame(), time.time()
 
     combined = pd.concat(frames, ignore_index=True)
     combined["relevance"] = (
@@ -204,11 +206,21 @@ def load_all_jobs() -> pd.DataFrame:
     # Auto-add skipped column for CSVs that predate the feature
     if "skipped" not in combined.columns:
         combined["skipped"] = ""
-    combined["skipped_bool"] = combined["skipped"].apply(_is_skipped)
+    combined["skipped_bool"] = combined["skipped"].astype(str).str.lower().isin(["yes", "true", "1"])
+    if "visible" not in combined.columns:
+        combined["visible"] = "yes"
+    combined["visible_bool"] = combined["visible"].astype(str).str.lower().isin(["yes", "true", "1"])
     combined["view_url"] = combined.apply(
         lambda r: f"/?company={r['_company']}&job_id={r['job_id']}", axis=1
     )
-    return combined
+
+    # Memory optimization: Downcast low-cardinality columns
+    for col in ["_company", "ats_type"]:
+        if col in combined.columns:
+            combined[col] = combined[col].astype("category")
+
+    import time
+    return combined, time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +401,10 @@ def render_job_detail_page(company: str, job_id: str) -> None:
             if md_path.exists():
                 current_md = md_path.read_text(encoding="utf-8")
                 new_val    = st.session_state.get(notes_key, "")
-                md_path.write_text(_write_notes(current_md, new_val), encoding="utf-8")
+                lock_md = str(md_path) + ".lock"
+                import filelock
+                with filelock.FileLock(lock_md, timeout=30):
+                    md_path.write_text(_write_notes(current_md, new_val), encoding="utf-8")
 
         if st.button("💾 Save Notes", type="primary", width="stretch",
                      on_click=_handle_notes_save, key=f"save_notes_{job_id}"):
@@ -442,10 +457,13 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                 "uncoverable": gap_result.get("uncoverable", []),
                 "_meta":       gap_result.get("_meta", {})
             }
-            gap_path.write_text(
-                json.dumps(gap_payload, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            lock_p = str(gap_path) + ".lock"
+            import filelock
+            with filelock.FileLock(lock_p, timeout=30):
+                gap_path.write_text(
+                    json.dumps(gap_payload, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
 
         # ════════════════════════════════════════════════════════
         # ⚡ EXPRESS PIPELINE (top-of-tab CTA)
@@ -473,10 +491,13 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                             )
                             if sc:
                                 sc_dir.mkdir(parents=True, exist_ok=True)
-                                sc_path.write_text(
-                                    json.dumps(sc, indent=2, ensure_ascii=False),
-                                    encoding="utf-8",
-                                )
+                                lock_p = str(sc_path) + ".lock"
+                                import filelock
+                                with filelock.FileLock(lock_p, timeout=30):
+                                    sc_path.write_text(
+                                        json.dumps(sc, indent=2, ensure_ascii=False),
+                                        encoding="utf-8",
+                                    )
                                 scorecard_data = sc
                                 st.write("  ✅ Scorecard generated.")
                             else:
@@ -585,10 +606,13 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                 if st.button("💾 Save Edited Scorecard", key=f"save_sc_{job_id}"):
                     try:
                         parsed = json.loads(edited_json)
-                        sc_path.write_text(
-                            json.dumps(parsed, indent=2, ensure_ascii=False),
-                            encoding="utf-8",
-                        )
+                        lock_p = str(sc_path) + ".lock"
+                        import filelock
+                        with filelock.FileLock(lock_p, timeout=30):
+                            sc_path.write_text(
+                                json.dumps(parsed, indent=2, ensure_ascii=False),
+                                encoding="utf-8"
+                            )
                         st.success("✅ Scorecard saved.")
                         st.rerun()
                     except json.JSONDecodeError as e:
@@ -609,10 +633,13 @@ def render_job_detail_page(company: str, job_id: str) -> None:
                         )
                         if sc:
                             sc_dir.mkdir(parents=True, exist_ok=True)
-                            sc_path.write_text(
-                                json.dumps(sc, indent=2, ensure_ascii=False),
-                                encoding="utf-8",
-                            )
+                            lock_p = str(sc_path) + ".lock"
+                            import filelock
+                            with filelock.FileLock(lock_p, timeout=30):
+                                sc_path.write_text(
+                                    json.dumps(sc, indent=2, ensure_ascii=False),
+                                    encoding="utf-8"
+                                )
                             st.success("✅ Scorecard generated!")
                             st.rerun()
                         else:
@@ -751,9 +778,7 @@ def main() -> None:
         return
 
     # ── Load data ───────────────────────────────────────────────────────────
-    df = load_all_jobs()
-
-
+    df, df_load_time = load_all_jobs()
     if df.empty:
         st.warning(
             "No job data loaded.  \n"
@@ -784,28 +809,26 @@ def main() -> None:
         st.divider()
         # ── Run Scraper button ───────────────────────────────────────────────
         if st.button("🚀 Run Scraper", width="stretch",
-                     help="Fetch latest jobs from all configured ATS sources"):
-            with st.spinner("Fetching latest jobs from ATS..."):
-                try:
-                    env = os.environ.copy()
-                    env["PYTHONIOENCODING"] = "utf-8"
-                    subprocess.run(
-                        [sys.executable, "src/state_tracker.py"],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        env=env,
-                        check=True,
-                        cwd=str(_PROJECT_ROOT),
-                    )
-                    st.success("✅ Scraper completed.")
-                    st.cache_data.clear()
-                    st.rerun()
-                except subprocess.CalledProcessError as exc:
-                    st.error(
-                        f"❌ Scraper exited with error (code {exc.returncode}):\n"
-                        f"```\n{exc.stderr[-600:] if exc.stderr else 'No stderr output.'}\n```"
-                    )
+                     help="Fetch latest jobs from all configured ATS sources in the background"):
+            try:
+                env = os.environ.copy()
+                env["PYTHONIOENCODING"] = "utf-8"
+                
+                log_dir = Path("logs")
+                log_dir.mkdir(exist_ok=True)
+                log_file = open(log_dir / "scraper.log", "a", encoding="utf-8")
+                
+                # Fire and forget
+                subprocess.Popen(
+                    [sys.executable, "src/state_tracker.py"],
+                    cwd=str(_PROJECT_ROOT),
+                    env=env,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT
+                )
+                st.success("🚀 **Scraper started in the background!** You can safely close this tab. The UI will automatically alert you when new jobs are ready.")
+            except Exception as exc:
+                st.error(f"❌ Failed to start scraper: {exc}")
 
         if st.button("🔄 Refresh Data", width="stretch",
                      help="Force reload all CSVs from disk"):
@@ -850,23 +873,23 @@ def main() -> None:
     # Four-way split
     active_df   = _apply_sort(
         base[
-            (base["visible"].str.lower() == "yes")
-            & base["applied"].apply(_not_applied)
-            & base["skipped_bool"].eq(False)
+            base["visible_bool"]
+            & (~base["applied_bool"])
+            & (~base["skipped_bool"])
         ],
         sort1, sort2,
     )
     if limit_rows > 0:
         active_df = active_df.head(limit_rows)
     sent_df     = _apply_sort(
-        base[base["applied"].apply(_is_applied)],
+        base[base["applied_bool"]],
         sort1, sort2,
     )
     archived_df = base[
-        (base["visible"].str.lower() == "no") & base["applied"].apply(_not_applied)
+        (~base["visible_bool"]) & (~base["applied_bool"])
     ].reset_index(drop=True)
     skipped_df  = base[
-        base["skipped_bool"].eq(True) & base["applied"].apply(_not_applied)
+        base["skipped_bool"] & (~base["applied_bool"])
     ].reset_index(drop=True)
 
     # ── Header & Funnel Metrics ──────────────────────────────────────────────
@@ -877,6 +900,40 @@ def main() -> None:
             & ((base["last_date"] - today).dt.days.between(0, deadline_window))
         ).sum()
     )
+
+    # Read last scrape time from CLI metadata (Auto-refreshing fragment)
+    import json
+    
+    # Use st.fragment (or experimental_fragment) if available for background auto-refresh
+    fragment_decorator = getattr(st, "fragment", getattr(st, "experimental_fragment", None))
+    
+    def _render_scrape_status():
+        last_scrape_time = None
+        metadata_path = Path("targets/scrape_metadata.json")
+        if metadata_path.exists():
+            try:
+                data = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if "last_scrape" in data:
+                    last_scrape_time = pd.Timestamp(data["last_scrape"])
+            except Exception:
+                pass
+    
+        if last_scrape_time:
+            hours_since = (pd.Timestamp.now(tz=datetime.timezone.utc) - last_scrape_time).total_seconds() / 3600
+            
+            # Check if background scrape happened after our UI data was loaded
+            if last_scrape_time.timestamp() > df_load_time:
+                st.warning("🔄 **New Data Available:** A scrape finished in the background! Click **🔄 Refresh Data** in the sidebar to load the latest jobs.")
+            elif hours_since > 12:
+                st.warning(f"⚠️ **Stale Data Alert:** It has been **{hours_since:.1f} hours** since your last scrape. Click **🚀 Run Scraper** in the sidebar to fetch fresh jobs.")
+            else:
+                st.caption(f"Last fetched data **{hours_since:.1f} hours ago**.")
+                
+    if fragment_decorator:
+        # Auto-refresh this specific block every 60 seconds
+        fragment_decorator(run_every=60)(_render_scrape_status)()
+    else:
+        _render_scrape_status()
 
     c_title, m1, m2, m3, m4 = st.columns([1.5, 1, 1, 1, 1], vertical_alignment="bottom")
     with c_title:
@@ -894,12 +951,13 @@ def main() -> None:
     m4.metric("🏢 Companies", len(company_filter))
 
     # ── Tabs ────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         f"🎯 Active Radar  ({len(active_df)})",
         f"📤 Sent Applications  ({len(sent_df)})",
         f"📦 Archived  ({len(archived_df)})",
         f"🚫 Skipped  ({len(skipped_df)})",
         "🧠 Insights & Growth",
+        "⚙️ Settings & Files",
     ])
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1130,7 +1188,6 @@ def main() -> None:
         user_details_dir = resume_path.parent
         digested_path = user_details_dir / "digested_insights.json"
         cache_path = user_details_dir / "gap_fill_cache.json"
-        ledger_path = user_details_dir / "skill_gaps_ledger.jsonl"
         
         current_resume_hash = "unknown"
         if resume_path.exists():
@@ -1242,7 +1299,9 @@ def main() -> None:
                             digested[selected_hash] = {}
                         digested[selected_hash]["clustered_skills"] = parsed
                         digested[selected_hash]["last_updated"] = datetime.datetime.now().isoformat()
-                        digested_path.write_text(json.dumps(digested, indent=2), encoding="utf-8")
+                        lock_p = str(digested_path) + ".lock"
+                        with filelock.FileLock(lock_p, timeout=30):
+                            digested_path.write_text(json.dumps(digested, indent=2), encoding="utf-8")
                         st.success("JSON saved successfully!")
                         st.rerun()
                 except Exception as e:
@@ -1266,11 +1325,56 @@ def main() -> None:
                             "learning_path": result.get("learning_path", []),
                             "_meta": result.get("_meta", {})
                         }
-                        cache_path.write_text(json.dumps(cache_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                        lock_p = str(cache_path) + ".lock"
+                        with filelock.FileLock(lock_p, timeout=30):
+                            cache_path.write_text(json.dumps(cache_payload, indent=2, ensure_ascii=False), encoding="utf-8")
                         st.success("✅ Gap Fill Analysis complete!")
                         st.rerun()
                     else:
                         st.error("❌ Failed to generate gap fill analysis. Check logs.")
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # TAB 6 — Settings & Files
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with tab6:
+        st.markdown("### ⚙️ Cloud File Manager")
+        st.caption("Edit your base configuration and profile data directly on the server without SSH.")
+        
+        config_path = Path("config.yaml")
+        profile_cfg = config.get("user_profile") or {}
+        resume_path = Path(profile_cfg.get("resume_path", "user_details/resume.md"))
+        custom_notes_path = Path(profile_cfg.get("custom_notes_path", "user_details/custom_notes.md"))
+        supp_dir = Path(profile_cfg.get("supplementary_dir", "user_details/SupplementaryData"))
+        
+        editable_files = {
+            "config.yaml": config_path,
+            "Resume (Markdown)": resume_path,
+            "Custom Notes": custom_notes_path,
+        }
+        
+        if supp_dir.exists() and supp_dir.is_dir():
+            for f in supp_dir.glob("*.txt"):
+                editable_files[f"Supplementary: {f.name}"] = f
+                
+        selected_file_label = st.selectbox("Select file to edit", list(editable_files.keys()))
+        selected_file_path = editable_files[selected_file_label]
+        
+        if selected_file_path.exists():
+            file_content = selected_file_path.read_text(encoding="utf-8")
+        else:
+            file_content = ""
+            st.warning(f"File {selected_file_path} does not exist yet. Saving will create it.")
+            
+        with st.form("file_editor_form"):
+            new_content = st.text_area("File Content", value=file_content, height=500)
+            if st.form_submit_button("💾 Save File"):
+                selected_file_path.parent.mkdir(parents=True, exist_ok=True)
+                lock_p = str(selected_file_path) + ".lock"
+                with filelock.FileLock(lock_p, timeout=30):
+                    selected_file_path.write_text(new_content, encoding="utf-8")
+                st.success(f"Saved {selected_file_path.name} successfully!")
+                st.cache_data.clear()
+                st.rerun()
 
 
 # ---------------------------------------------------------------------------

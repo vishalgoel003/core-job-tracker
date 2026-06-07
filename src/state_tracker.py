@@ -34,6 +34,9 @@ Rules cited:
 import csv
 import datetime
 import sys
+import logging
+import builtins
+from logging.handlers import RotatingFileHandler
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -46,6 +49,36 @@ try:
 except ImportError:
     import config_engine              # when run directly: python src/state_tracker.py
     import workday_scraper
+
+# ── Log Management (Docker Safe) ──────────────────────────────────────────
+def _setup_logger():
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    logger = logging.getLogger("state_tracker")
+    logger.setLevel(logging.INFO)
+    
+    if not logger.handlers:
+        fh = RotatingFileHandler(log_dir / "scraper.log", maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
+        fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+        
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setFormatter(fmt)
+        logger.addHandler(ch)
+        
+    return logger
+
+_logger = _setup_logger()
+
+def _custom_print(*args, **kwargs):
+    msg = " ".join(str(a) for a in args)
+    _logger.info(msg)
+
+# Override built-in print globally for this script
+builtins.print = _custom_print
+
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -165,12 +198,15 @@ def write_ledger(ledger: dict[str, dict], csv_path: Path) -> None:
                   silently dropped (extrasaction='ignore').
     """
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+    import filelock
 
-    with csv_path.open(mode="w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=config_engine.CSV_COLUMNS, extrasaction="ignore")
-        writer.writeheader()
-        for row in ledger.values():
-            writer.writerow(row)
+    lock_path = str(csv_path) + ".lock"
+    with filelock.FileLock(lock_path, timeout=30):
+        with csv_path.open(mode="w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=config_engine.CSV_COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            for row in ledger.values():
+                writer.writerow(row)
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +291,10 @@ def write_job_detail(
 """
 
     md_path.parent.mkdir(parents=True, exist_ok=True)
-    md_path.write_text(content, encoding="utf-8")
+    import filelock
+    lock_md = str(md_path) + ".lock"
+    with filelock.FileLock(lock_md, timeout=30):
+        md_path.write_text(content, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +579,18 @@ def main() -> None:
                     print(f"  [ERROR] {name} failed: {exc}")
 
     print()
+    
+    # Save scrape metadata for UI
+    import json
+    metadata_path = Path("targets/scrape_metadata.json")
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps({
+            "last_scrape": datetime.datetime.now(datetime.timezone.utc).isoformat()
+        }),
+        encoding="utf-8"
+    )
+    
     print("[DONE] Task 3 complete.")
     print()
 
