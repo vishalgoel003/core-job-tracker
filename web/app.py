@@ -62,7 +62,6 @@ st.markdown("""
     /* ── Hide Streamlit chrome (keep header so sidebar toggle remains accessible) ── */
     #MainMenu                    { visibility: hidden; }
     footer                       { visibility: hidden; }
-    [data-testid="stToolbar"]    { display: none; }
     .block-container             { padding-top: 1.5rem !important; }
 
     /* ── Metric cards ── */

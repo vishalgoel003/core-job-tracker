@@ -504,6 +504,33 @@ companies:
   #       jobFamily:
   #         - "2745bc1368021016a991f65e710a3b1e"   # Software Engineering
 
+  # - name: "NAB"
+  #   ats_type: "workday"
+  #   # Browser URL:
+  #   # https://nab.wd3.myworkdayjobs.com/en-US/nab_careers/jobs/details/Vice-President_JR116430?q=java&locationCountry=c4f78be1a8f14da0ab49ce1162348a5e
+  #   api_url: "https://nab.wd3.myworkdayjobs.com/wday/cxs/nab/nab_careers/jobs"
+  #   payload:
+  #     searchText: "java"
+  #     limit: 20
+  #     offset: 0
+  #     appliedFacets:
+  #       locationCountry:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
+
+  # - name: "Saxo Bank"
+  #   ats_type: "workday"
+  #   # Browser URL:
+  #   # https://saxobank.wd3.myworkdayjobs.com/en-US/CareeratSaxoBank/jobs?q=java&locationCountry=c4f78be1a8f14da0ab49ce1162348a5e&jobFamilyGroup=f9996b5b2b180137c191753df601c307
+  #   api_url: "https://saxobank.wd3.myworkdayjobs.com/wday/cxs/saxobank/CareeratSaxoBank/jobs"
+  #   payload:
+  #     searchText: "java"
+  #     limit: 20
+  #     offset: 0
+  #     appliedFacets:
+  #       locationCountry:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
+  #       jobFamilyGroup:
+  #         - "f9996b5b2b180137c191753df601c307"   # IT / Technology
 
   # ── Non-Workday ATS (not yet supported — roadmap items) ──────────────────
   # - name: "Arcesium"
