@@ -532,6 +532,19 @@ companies:
   #       jobFamilyGroup:
   #         - "f9996b5b2b180137c191753df601c307"   # IT / Technology
 
+  # - name: "DIC"
+  #   ats_type: "dic"
+  #   # Portal: https://ora.digitalindiacorporation.in/dashboard
+  #   # Single GET, all jobs inline as JSON in data-job HTML attributes.
+  #   # Contains: title, location, salary/band, qualification, experience, full JD, last_date.
+  #   # No api_url or payload — URL is hardcoded in custom_scrapers.py.
+
+  # - name: "NISG"
+  #   ats_type: "nisg"
+  #   # Portal: https://www.myemploywise.com/asperm/servlet/website?customer_code=nisg-new
+  #   # Cookie-paginated XML API, 5 records/page. Scraper handles all pagination.
+  #   # No api_url or payload — URL is hardcoded in custom_scrapers.py.
+
   # ── Non-Workday ATS (not yet supported — roadmap items) ──────────────────
   # - name: "Arcesium"
   #   ats_type: "greenhouse"

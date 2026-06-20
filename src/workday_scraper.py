@@ -171,7 +171,7 @@ def _paginate(
 
     first_page = _post_page(api_url, payload, offset=0, session=session)
     total: int = int(first_page.get("total") or 0)
-    print(f"    ← total={total} jobs reported by Workday API")
+    print(f"    <- total={total} jobs reported by Workday API")
 
     for item in (first_page.get("jobPostings") or []):
         all_jobs.append(_normalize_job(item, company_name, base_url))
@@ -222,7 +222,7 @@ def fetch_jobs(company: dict[str, Any]) -> list[dict[str, str]]:
     print(f"  Payload  : {payload}")
 
     jobs = _paginate(api_url, payload, name, base_url)
-    print(f"\n[{name}] Scrape complete — {len(jobs)} normalized job(s) returned.")
+    print(f"\n[{name}] Scrape complete - {len(jobs)} normalized job(s) returned.")
     return jobs
 
 
@@ -262,7 +262,7 @@ def fetch_job_detail(
     detail_url    = detail_base + external_path
     canonical_url = detail_url   # baseline fallback before parsing response
 
-    print(f"    → GET detail: ...{external_path[-60:]}")
+    print(f"    -> GET detail: ...{external_path[-60:]}")
 
     try:
         response = session.get(detail_url, timeout=30)
@@ -324,7 +324,7 @@ def fetch_job_detail(
 
 def main() -> None:
     print()
-    print("=== workday_scraper.py — Task 2: Workday API Scraper Engine ===")
+    print("=== workday_scraper.py - Task 2: Workday API Scraper Engine ===")
     print(f"    User-Agent : {USER_AGENT}")
     print()
 

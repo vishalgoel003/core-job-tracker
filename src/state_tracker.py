@@ -34,8 +34,23 @@ Rules cited:
 import csv
 import datetime
 import sys
+import threading
+
+# Reconfigure stdout/stderr encoding errors to prevent Windows UnicodeEncodeErrors on console print
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 import logging
 import builtins
+
 from logging.handlers import RotatingFileHandler
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -48,9 +63,11 @@ import filelock
 try:
     from . import config_engine       # when imported as part of the src package
     from . import workday_scraper     # when imported as part of the src package
+    from . import custom_scrapers     # non-Workday ATS plugins (DIC, NISG)
 except ImportError:
     import config_engine              # when run directly: python src/state_tracker.py
     import workday_scraper
+    import custom_scrapers
 
 # ── Log Management (Docker Safe) ──────────────────────────────────────────
 def _setup_logger():
@@ -73,12 +90,30 @@ def _setup_logger():
 
 _logger = _setup_logger()
 
+_in_print = threading.local()
+
 def _custom_print(*args, **kwargs):
-    msg = " ".join(str(a) for a in args)
-    _logger.info(msg)
+    if getattr(_in_print, "active", False):
+        try:
+            sys.__stdout__.write(" ".join(str(a) for a in args) + "\n")
+        except Exception:
+            pass
+        return
+    _in_print.active = True
+    try:
+        msg = " ".join(str(a) for a in args)
+        _logger.info(msg)
+    except Exception:
+        try:
+            sys.__stdout__.write(" ".join(str(a) for a in args) + "\n")
+        except Exception:
+            pass
+    finally:
+        _in_print.active = False
 
 # Override built-in print globally for this script
 builtins.print = _custom_print
+
 
 
 
@@ -148,11 +183,11 @@ def reconcile(
             ledger[job_id] = {
                 "job_id":              job_id,
                 "title":               job.get("title", ""),
-                "first_discovered_on": today,
+                "first_discovered_on": job.get("first_discovered_on") or today,
                 "visible":             "yes",
                 "relevance":           job.get("relevance", "TBD"),
                 "applied":             job.get("applied", "no"),
-                "last_date":           "",    # blank until HR deadline fetched via Late Write
+                "last_date":           job.get("last_date") or "",
                 "skipped":             "",
                 # Enrichment fields — stripped from CSV by extrasaction='ignore'
                 "_company":           job.get("_company", ""),
@@ -166,6 +201,11 @@ def reconcile(
         else:
             # last_date is the HR application deadline — never overwrite with today
             ledger[job_id]["visible"] = "yes"
+            if job.get("last_date"):
+                ledger[job_id]["last_date"] = job["last_date"]
+            # Update discovery date if the scraper has a real past date and ledger has today's date
+            if job.get("first_discovered_on") and ledger[job_id].get("first_discovered_on") == today:
+                ledger[job_id]["first_discovered_on"] = job["first_discovered_on"]
             updated_count += 1
 
     # Pass 2: delist entries absent from fresh pull
@@ -304,9 +344,10 @@ def write_job_detail(
 # ---------------------------------------------------------------------------
 
 def process_company(
-    company_cfg: dict,
-    fresh_jobs:  list[dict],
-    paths:       dict,
+    company_cfg:         dict,
+    fresh_jobs:          list[dict],
+    paths:               dict,
+    inline_descriptions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Full state-tracking cycle for one employer (v3 architecture).
@@ -314,12 +355,16 @@ def process_company(
     Execution order:
       1. load_ledger()       — read existing CSV state
       2. reconcile()         — three-way dedup; NO CSV write yet
-      3. detail_session      — single stateful session [NET-2.1]
+      3. detail_session      — single stateful session (Workday only) [NET-2.1]
       4. self-healing loop   — iterate fresh_jobs (full list):
-           • .md missing              → fetch detail, create new file
-           • .md exists, no section   → fetch detail, append section
-           • .md complete             → skip (zero network calls)
-           • on successful fetch      → update ledger[job_id]["first_discovered_on"]
+           Workday jobs:
+             • .md missing            → fetch_job_detail() HTTP call, create file
+             • .md exists, no section → fetch_job_detail() HTTP call, append section
+             • .md complete           → skip (zero network calls)
+           Custom ATS jobs (dic, nisg):
+             • .md missing            → use inline_descriptions dict, create file
+             • .md exists, no section → use inline_descriptions dict, append section
+             • .md complete           → skip
       5. write_ledger()      — LATE WRITE: CSV now contains authoritative dates
       6. print summary
 
@@ -328,7 +373,7 @@ def process_company(
       Jobs with fully-populated .md files generate zero network requests.
     """
     name:            str  = company_cfg["name"]
-    api_url:         str  = company_cfg["api_url"]
+    api_url:         str  = company_cfg.get("api_url", "")   # absent for dic/nisg
     csv_path:        Path = paths["root_dir"] / "master_jobs.csv"
     job_details_dir: Path = paths["job_details_dir"]
 
@@ -338,9 +383,13 @@ def process_company(
     # 2. Reconcile — in-memory only, no CSV write yet
     ledger, summary = reconcile(ledger, fresh_jobs)
 
-    # 3. Stateful detail session [NET-2.1]
+    # 3. Stateful detail session (Workday only) [NET-2.1]
     detail_session = requests.Session()
-    detail_session.headers.update(workday_scraper._BASE_HEADERS)
+    if api_url:
+        detail_session.headers.update(workday_scraper._BASE_HEADERS)
+
+    # Determine if this ATS provides inline descriptions (dic/nisg)
+    is_custom_ats = inline_descriptions is not None
 
     fetched_ok = 0
     fetched_skip = 0
@@ -360,7 +409,6 @@ def process_company(
         if not md_path.exists():
             needs_fetch = True
             append_mode = False   # brand-new file
-
         else:
             existing_text = md_path.read_text(encoding="utf-8")
             if "## Job Description" not in existing_text:
@@ -371,19 +419,41 @@ def process_company(
         if not needs_fetch:
             continue
 
-        # Fetch rich detail dict
         detail_dict: dict | None = None
-        if ext_path:
-            detail_dict = workday_scraper.fetch_job_detail(
-                detail_session, api_url, ext_path
-            )
 
-        # Late Write prep — update in-memory ledger with authoritative HR dates
-        if detail_dict and job_id in ledger:
-            if detail_dict.get("start_date"):
-                ledger[job_id]["first_discovered_on"] = detail_dict["start_date"]
-            if detail_dict.get("end_date"):
-                ledger[job_id]["last_date"] = detail_dict["end_date"]
+        if is_custom_ats:
+            # Use pre-fetched inline description — no HTTP call needed
+            inline_md = inline_descriptions.get(job_id, "")  # type: ignore[union-attr]
+            if inline_md:
+                detail_dict = {
+                    "description":    inline_md,
+                    "start_date":     "",
+                    "end_date":       job.get("last_date", ""),
+                    "posted_on":      "",
+                    "exact_location": job.get("_location", ""),
+                    "canonical_url":  job.get("_url", ""),
+                }
+                fetched_ok += 1
+            else:
+                fetched_skip += 1
+        else:
+            # Standard Workday detail fetch
+            if ext_path:
+                detail_dict = workday_scraper.fetch_job_detail(
+                    detail_session, api_url, ext_path
+                )
+
+            # Late Write prep — update in-memory ledger with authoritative HR dates
+            if detail_dict and job_id in ledger:
+                if detail_dict.get("start_date"):
+                    ledger[job_id]["first_discovered_on"] = detail_dict["start_date"]
+                if detail_dict.get("end_date"):
+                    ledger[job_id]["last_date"] = detail_dict["end_date"]
+
+            if detail_dict:
+                fetched_ok += 1
+            else:
+                fetched_skip += 1
 
         if append_mode:
             # Append description section to existing file — preserve user notes
@@ -397,11 +467,6 @@ def process_company(
             # Create new file with full metadata + description
             write_job_detail(job, job_details_dir, detail_dict)
 
-        if detail_dict:
-            fetched_ok += 1
-        else:
-            fetched_skip += 1
-
     # 5. LATE WRITE — CSV now contains authoritative startDate values
     write_ledger(ledger, csv_path)
 
@@ -414,8 +479,8 @@ def process_company(
 
     print(f"  [{name}] new={new_count}  updated={updated_count}  delisted={delisted_count}  healed={healed}")
     print(f"  [{name}] Detail fetches : {fetched_ok} ok / {fetched_skip} skipped")
-    print(f"  [{name}] CSV rows       : {total_rows}  → {csv_path}")
-    print(f"  [{name}] Detail .md     : {md_files}    → {job_details_dir}")
+    print(f"  [{name}] CSV rows       : {total_rows}  -> {csv_path}")
+    print(f"  [{name}] Detail .md     : {md_files}    -> {job_details_dir}")
 
     return {"new": new_count, "updated": updated_count, "delisted": delisted_count}
 
@@ -427,14 +492,27 @@ def process_company(
 def _scrape_one(company_cfg: dict, paths: dict) -> dict[str, Any]:
     """
     Scrape + process one company. Isolated for thread safety.
-    Each company gets its own requests.Session inside fetch_jobs()
-    and process_company(), and writes to its own CSV file.
+    Dispatches to the correct scraper based on ats_type.
+    Outer try/except ensures one failing company never aborts the batch.
     """
-    name = company_cfg["name"]
-    print(f"  Fetching live jobs for: {name}")
-    fresh_jobs = workday_scraper.fetch_jobs(company_cfg)
+    name     = company_cfg.get("name", "unknown")
+    ats_type = company_cfg.get("ats_type", "workday").lower()
+    print(f"  Fetching live jobs for: {name} (ats_type={ats_type})")
+
+    try:
+        if ats_type == "dic":
+            fresh_jobs, inline_descriptions = custom_scrapers.fetch_jobs_dic(company_cfg)
+        elif ats_type == "nisg":
+            fresh_jobs, inline_descriptions = custom_scrapers.fetch_jobs_nisg(company_cfg)
+        else:
+            fresh_jobs = workday_scraper.fetch_jobs(company_cfg)
+            inline_descriptions = {}
+    except Exception as exc:
+        print(f"  [ERROR] {name} scraper raised an unexpected exception: {exc}")
+        return {"new": 0, "updated": 0, "delisted": 0}
+
     print()
-    return process_company(company_cfg, fresh_jobs, paths)
+    return process_company(company_cfg, fresh_jobs, paths, inline_descriptions)
 
 
 
@@ -540,12 +618,14 @@ def main() -> None:
 
     max_workers = config.get("global_settings", {}).get("max_parallel_scrapers", 4)
 
-    workday_companies = []
+    SUPPORTED_ATS = {"workday", "dic", "nisg"}
+
+    supported_companies = []
     for company_cfg in companies:
         ats_type = company_cfg.get("ats_type", "").lower()
         name     = company_cfg.get("name", "unknown")
 
-        if ats_type != "workday":
+        if ats_type not in SUPPORTED_ATS:
             print(f"  [SKIP] {name} — ats_type '{ats_type}' not yet supported")
             continue
 
@@ -553,25 +633,25 @@ def main() -> None:
             print(f"  [ERROR] No path entry for '{name}'. Check config.yaml.")
             sys.exit(1)
 
-        workday_companies.append(company_cfg)
+        supported_companies.append(company_cfg)
 
-    if not workday_companies:
-        print("[WARN] No supported (workday) companies found.")
+    if not supported_companies:
+        print("[WARN] No supported companies found.")
         sys.exit(0)
 
-    if len(workday_companies) == 1:
+    if len(supported_companies) == 1:
         # Single company — run directly, no threading overhead
-        _scrape_one(workday_companies[0], path_map[workday_companies[0]["name"]])
+        _scrape_one(supported_companies[0], path_map[supported_companies[0]["name"]])
     else:
         # Multiple companies — run in parallel
-        effective_workers = min(max_workers, len(workday_companies))
-        print(f"  [PARALLEL] Scraping {len(workday_companies)} companies with {effective_workers} workers")
+        effective_workers = min(max_workers, len(supported_companies))
+        print(f"  [PARALLEL] Scraping {len(supported_companies)} companies with {effective_workers} workers")
         print()
 
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             futures = {
                 executor.submit(_scrape_one, c, path_map[c["name"]]): c["name"]
-                for c in workday_companies
+                for c in supported_companies
             }
             for future in as_completed(futures):
                 name = futures[future]
