@@ -506,7 +506,7 @@ def _scrape_one(company_cfg: dict, paths: dict) -> dict[str, Any]:
             fresh_jobs, inline_descriptions = custom_scrapers.fetch_jobs_nisg(company_cfg)
         else:
             fresh_jobs = workday_scraper.fetch_jobs(company_cfg)
-            inline_descriptions = {}
+            inline_descriptions = None
     except Exception as exc:
         print(f"  [ERROR] {name} scraper raised an unexpected exception: {exc}")
         return {"new": 0, "updated": 0, "delisted": 0}
