@@ -95,7 +95,7 @@ def _normalize_job(raw_item: dict[str, Any], company_name: str, base_url: str) -
         "job_id":              job_id,
         "title":               title,
         "first_discovered_on": today,
-        "last_date":           today,
+        "last_date":           "",
         "visible":             "yes",
         "relevance":           0,       # numeric score 0–100; set by LLM pipeline later
         "applied":             "no",

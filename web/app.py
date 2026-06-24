@@ -900,7 +900,10 @@ def main() -> None:
     today          = pd.Timestamp.today().normalize()
     deadlines_soon = int(
         (
-            base["last_date"].notna()
+            base["visible_bool"]
+            & (~base["applied_bool"])
+            & (~base["skipped_bool"])
+            & base["last_date"].notna()
             & ((base["last_date"] - today).dt.days.between(0, deadline_window))
         ).sum()
     )
