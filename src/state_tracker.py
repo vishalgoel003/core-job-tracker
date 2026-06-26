@@ -62,12 +62,10 @@ import filelock
 
 try:
     from . import config_engine       # when imported as part of the src package
-    from . import workday_scraper     # when imported as part of the src package
-    from . import custom_scrapers     # non-Workday ATS plugins (DIC, NISG)
+    from . import scraper_registry    # Dynamic dispatch for all ATS scrapers
 except ImportError:
     import config_engine              # when run directly: python src/state_tracker.py
-    import workday_scraper
-    import custom_scrapers
+    import scraper_registry
 
 # ── Log Management (Docker Safe) ──────────────────────────────────────────
 def _setup_logger():
@@ -374,6 +372,7 @@ def process_company(
     """
     name:            str  = company_cfg["name"]
     api_url:         str  = company_cfg.get("api_url", "")   # absent for dic/nisg
+    ats_type:        str  = company_cfg.get("ats_type", "workday").lower()
     csv_path:        Path = paths["root_dir"] / "master_jobs.csv"
     job_details_dir: Path = paths["job_details_dir"]
 
@@ -383,10 +382,11 @@ def process_company(
     # 2. Reconcile — in-memory only, no CSV write yet
     ledger, summary = reconcile(ledger, fresh_jobs)
 
-    # 3. Stateful detail session (Workday only) [NET-2.1]
-    detail_session = requests.Session()
-    if api_url:
-        detail_session.headers.update(workday_scraper._BASE_HEADERS)
+    # 3. Stateful detail session
+    session = requests.Session()
+    scraper = scraper_registry.get_standard_scraper(ats_type)
+    if scraper and hasattr(scraper, '_BASE_HEADERS'):
+        session.headers.update(scraper._BASE_HEADERS)
 
     # Determine if this ATS provides inline descriptions (dic/nisg)
     is_custom_ats = inline_descriptions is not None
@@ -422,33 +422,24 @@ def process_company(
         detail_dict: dict | None = None
 
         if is_custom_ats:
-            # Use pre-fetched inline description — no HTTP call needed
-            inline_md = inline_descriptions.get(job_id, "")  # type: ignore[union-attr]
-            if inline_md:
+            if inline_descriptions and job_id in inline_descriptions:
                 detail_dict = {
-                    "description":    inline_md,
-                    "start_date":     "",
-                    "end_date":       job.get("last_date", ""),
-                    "posted_on":      "",
-                    "exact_location": job.get("_location", ""),
-                    "canonical_url":  job.get("_url", ""),
+                    "description": inline_descriptions[job_id],
+                    "start_date": "", "end_date": "",
+                    "posted_on": "", "exact_location": "", "canonical_url": ""
                 }
-                fetched_ok += 1
-            else:
-                fetched_skip += 1
         else:
-            # Standard Workday detail fetch
-            if ext_path:
-                detail_dict = workday_scraper.fetch_job_detail(
-                    detail_session, api_url, ext_path
-                )
+            # Dynamic detail fetch for standard scrapers
+            scraper = scraper_registry.get_standard_scraper(ats_type)
+            if scraper and ext_path:
+                detail_dict = scraper.fetch_job_detail(session, api_url, ext_path)
 
-            # Late Write prep — update in-memory ledger with authoritative HR dates
-            if detail_dict and job_id in ledger:
-                if detail_dict.get("start_date"):
-                    ledger[job_id]["first_discovered_on"] = detail_dict["start_date"]
-                if detail_dict.get("end_date"):
-                    ledger[job_id]["last_date"] = detail_dict["end_date"]
+        # Late Write prep — update in-memory ledger with authoritative HR dates
+        if detail_dict and job_id in ledger:
+            if detail_dict.get("start_date"):
+                ledger[job_id]["first_discovered_on"] = detail_dict["start_date"]
+            if detail_dict.get("end_date"):
+                ledger[job_id]["last_date"] = detail_dict["end_date"]
 
             if detail_dict:
                 fetched_ok += 1
@@ -499,14 +490,18 @@ def _scrape_one(company_cfg: dict, paths: dict) -> dict[str, Any]:
     ats_type = company_cfg.get("ats_type", "workday").lower()
     print(f"  Fetching live jobs for: {name} (ats_type={ats_type})")
 
+    custom_fetcher = scraper_registry.get_custom_fetcher(ats_type)
+    standard_scraper = scraper_registry.get_standard_scraper(ats_type)
+
     try:
-        if ats_type == "dic":
-            fresh_jobs, inline_descriptions = custom_scrapers.fetch_jobs_dic(company_cfg)
-        elif ats_type == "nisg":
-            fresh_jobs, inline_descriptions = custom_scrapers.fetch_jobs_nisg(company_cfg)
-        else:
-            fresh_jobs = workday_scraper.fetch_jobs(company_cfg)
+        if custom_fetcher:
+            fresh_jobs, inline_descriptions = custom_fetcher(company_cfg)
+        elif standard_scraper:
+            fresh_jobs = standard_scraper.fetch_jobs(company_cfg)
             inline_descriptions = None
+        else:
+            print(f"  [ERROR] No registered scraper for ats_type '{ats_type}'")
+            return {"new": 0, "updated": 0, "delisted": 0}
     except Exception as exc:
         print(f"  [ERROR] {name} scraper raised an unexpected exception: {exc}")
         return {"new": 0, "updated": 0, "delisted": 0}
@@ -618,14 +613,12 @@ def main() -> None:
 
     max_workers = config.get("global_settings", {}).get("max_parallel_scrapers", 4)
 
-    SUPPORTED_ATS = {"workday", "dic", "nisg"}
-
     supported_companies = []
     for company_cfg in companies:
         ats_type = company_cfg.get("ats_type", "").lower()
         name     = company_cfg.get("name", "unknown")
 
-        if ats_type not in SUPPORTED_ATS:
+        if not scraper_registry.is_supported(ats_type):
             print(f"  [SKIP] {name} — ats_type '{ats_type}' not yet supported")
             continue
 

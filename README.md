@@ -1,6 +1,6 @@
 # 🎯 Core Job Tracker — Job Application OS
 
-A self-hosted, multi-company job application CRM built entirely in Python. Scrapes live job listings from Workday's internal CXS API, tracks your application pipeline in structured CSV ledgers and rich Markdown files, and surfaces everything through a Streamlit "Job Application OS" dashboard — with an integrated LLM scoring pipeline that evaluates your resume against each job description.
+A self-hosted, multi-company job application CRM built entirely in Python. Scrapes live job listings from Workday, Oracle, and custom ATS APIs, tracks your application pipeline in structured CSV ledgers and rich Markdown files, and surfaces everything through a Streamlit "Job Application OS" dashboard — with an integrated LLM scoring pipeline that evaluates your resume against each job description.
 
 ---
 
@@ -8,7 +8,7 @@ A self-hosted, multi-company job application CRM built entirely in Python. Scrap
 
 | Layer | What it does |
 |---|---|
-| **Scraper** | Stateful `requests.Session` pagination against Workday's CXS API. Handles WAF cookie reuse, 130s timeouts, and inter-page delays. Parallel multi-company scraping via `ThreadPoolExecutor`. |
+| **Scraper** | Dynamic ATS Registry with stateful `requests.Session` pagination against Workday CXS, Oracle REST API, and custom portals. Handles WAF cookie reuse, timeouts, and inter-page delays. Parallel multi-company scraping via `ThreadPoolExecutor`. |
 | **State Tracking** | 3-way reconciliation (New / Updated / Delisted). Self-healing `.md` file checks. "Late Write" CSV pattern populates authoritative HR posting dates. |
 | **Rich Job Files** | Per-job `.md` files with metadata table (Posted Date, Age, Deadline), full HTML-to-Markdown job description via `html2text`, and an editable `## Notes` section. |
 | **Web UI** | Streamlit 6-Tab CRM: Active Radar · Sent · Archive & Skipped · Manual Entry · Insights · Settings. Inline applied date-stamping, relevance scoring, and `filelock` safe write-back. |
@@ -301,11 +301,13 @@ python src/state_tracker.py
 | ATS Type | Extraction Mechanism | Status |
 |---|---|---|
 | **Workday** | Hidden JSON API (`POST` to CXS endpoint) | ✅ Supported |
-| **Greenhouse** | Public REST API (`GET`) | 🔜 Roadmap |
-| **Lever** | Public REST API (`GET`) | 🔜 Roadmap |
+| **DIC** | Dashboard regex extraction (`GET`) | ✅ Supported |
+| **NISG / EmployWise** | Stateful XML pagination (`POST`) | ✅ Supported |
+| **Greenhouse** | Public REST API (`GET`) | ✅ Supported |
+| **Lever** | Public REST API (`GET`) | ✅ Supported |
 | **Eightfold.ai** | Internal GraphQL / POST | 🔜 Roadmap |
 | **SmartRecruiters** | REST API | 🔜 Roadmap |
-| **Oracle HCM** | REST Endpoints / HTML | 🔜 Roadmap |
+| **Oracle HCM** | REST Endpoints / HTML | ✅ Supported |
 | **SuccessFactors** | OData REST API (`GET`) | 🔜 Roadmap |
 
 ---
@@ -353,9 +355,10 @@ The script will natively build the ARM64 image using your OCI server's hardware 
 - [x] Task 9: Native Dockerization & OCI remote packaging strategy
 - [x] Task 10: Manual Jobs Pipeline (Isolated UI-driven tracking for non-Workday external jobs)
 - [x] Task 11: Automated daily scraper scheduler
-- [ ] Task 12: Multi-ATS support (Greenhouse, Lever, SmartRecruiters)
-- [ ] Task 13: Fully automated async scoring pipeline
-- [ ] Task 14: Phase 2 API Migration (FastAPI backend + Next.js frontend)
+- [x] Task 12: Multi-ATS routing architecture (via `ats_type` dispatch) + DIC & NISG integration
+- [ ] Task 13: Multi-ATS expansion (Porting Greenhouse, Lever, SmartRecruiters, etc. from reference project)
+- [ ] Task 14: Fully automated async scoring pipeline
+- [ ] Task 15: Phase 2 API Migration (FastAPI backend + Next.js frontend)
 
 ---
 

@@ -217,6 +217,17 @@ user_profile:
 #   4. Copy the API URL and facet IDs from the POST payload
 #   5. Uncomment and fill in the entry below
 companies:
+  # ── Supported Non-Workday ATS (Avature) ────────────────────────────────────
+  - name: "Bloomberg"
+    ats_type: "avature"
+    api_url: "https://bloomberg.avature.net/careers/SearchJobs"
+    payload:
+      "1845": "[162477,162478,162575]"
+      "1845_format": "3996"
+      "2562": "[219290]"
+      "2562_format": "6594"
+      "listFilterMode": "1"
+      "jobRecordsPerPage": 12
 
   # ── Priority 1: Market Infrastructure ────────────────────────────────────
   # - name: "LSEG"
@@ -287,6 +298,18 @@ companies:
   #       jobFamilyGroup:
   #         - "56250981e7cb01b9a0c0c6893041490c"   # Technology
 
+  # ── Priority 2: Banking & Financial Services ─────────────────────────────
+  # - name: "HSBC"
+  #   ats_type: "eightfold"
+  #   # Browser URL:
+  #   # https://hsbc.eightfold.ai/careers?location=India&department=Technology&jobType=full%20time&domain=hsbc.com
+  #   api_url: "https://hsbc.eightfold.ai"
+  #   payload:
+  #     domain: "hsbc.com"
+  #     location: "India"
+  #     department: "Technology"
+  #     jobType: "full time"
+
   # - name: "Nasdaq"
   #   ats_type: "workday"
   #   # Browser URL:
@@ -329,6 +352,14 @@ companies:
 
 
   # ── Priority 3: Tier-1 Banks ─────────────────────────────────────────────
+
+  # - name: "JP Morgan"
+  #   ats_type: "oracle"
+  #   api_url: "https://jpmc.fa.oraclecloud.com"
+  #   payload:
+  #     siteNumber: "CX_1001"
+  #     locationId: "300000000289360"
+  #     selectedCategoriesFacet: "300000086152753"
 
   # - name: "MorganStanley"
   #   ats_type: "workday"
@@ -373,14 +404,18 @@ companies:
         jobFamilyGroup:
           - "your-job-family-facet-id-here"
 
-  # - name: "WellsFargo"
+  # - name: "Wells Fargo"
   #   ats_type: "workday"
   #   api_url: "https://wd1.myworkdaysite.com/wday/cxs/wf/WellsFargoJobs/jobs"
   #   payload:
-  #     searchText: "Java"
+  #     searchText: "java"
   #     limit: 20
   #     offset: 0
-  #     appliedFacets: {}
+  #     appliedFacets:
+  #       locationCountry:
+  #         - "c4f78be1a8f14da0ab49ce1162348a5e"
+  #       jobFamilyGroup:
+  #         - "b5c3287c76c20100b318a19542940001"
 
   # - name: "Macquarie"
   #   ats_type: "workday"
@@ -405,6 +440,15 @@ companies:
   #         - "c4f78be1a8f14da0ab49ce1162348a5e"   # India
   #       jobFamilyGroup:
   #         - "e39fd413f80c0104eb5775256a997b12"   # Technology
+
+  # ── Oracle ATS Examples ──────────────────────────────────────────────────
+  # - name: "JP Morgan"
+  #   ats_type: "oracle"
+  #   api_url: "https://jpmc.fa.oraclecloud.com"
+  #   payload:
+  #     siteNumber: "CX_1001"
+  #     locationId: "300000000289360"
+  #     selectedCategoriesFacet: "300000086152753"   # Technology
 
   # - name: "Avnet"
   #   ats_type: "workday"
@@ -545,7 +589,7 @@ companies:
   #   # Cookie-paginated XML API, 5 records/page. Scraper handles all pagination.
   #   # No api_url or payload — URL is hardcoded in custom_scrapers.py.
 
-  # ── Non-Workday ATS (not yet supported — roadmap items) ──────────────────
+  # ── Supported Non-Workday ATS (Greenhouse / Lever) ───────────────────────
   # - name: "Arcesium"
   #   ats_type: "greenhouse"
   #   careers_url: "https://job-boards.greenhouse.io/arcesiumllc"
@@ -558,14 +602,10 @@ companies:
   #   ats_type: "greenhouse"
   #   careers_url: "https://boards.greenhouse.io/razorpay"
 
+  # ── Roadmap / Not Yet Supported ATS ────────────────────────────────────────
+
+
   # - name: "Block"
   #   ats_type: "smartrecruiters"
   #   careers_url: "https://careers.smartrecruiters.com/Square"
 
-  # - name: "JPMorganChase"
-  #   ats_type: "oracle"
-  #   careers_url: "https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/jobs"
-
-  # - name: "Bloomberg"
-  #   ats_type: "eightfold"
-  #   careers_url: "https://careers.bloomberg.com/jobs/search"
